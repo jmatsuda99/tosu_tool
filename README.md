@@ -1,1 +1,3 @@
-# Energy Viewer v1.6\n\nEnglish-only graph titles, legend toggle (default OFF) in all tabs.\n
+# Energy Viewer v1.6.1 (Full)
+
+English-only graph titles + legend toggle (default OFF).

@@ -1,16 +1,15 @@
 
-# 使用電力量 時系列ビューア（ロス前／ロス後） v1.2
+# Energy Consumption Viewer (Before/After Loss) v1.3
 
-- グラフ表示は日本語（フォントは環境にある日本語フォントを優先使用）
-- アップロードしたデータを **SQLite(DB)** に保存。次回以降はファイル無しで表示可能
-- 30分/日別合計/月別合計の切替、ロス前・ロス後の2系列、表示データのCSVダウンロード
-- DBクリアボタンあり
+- **English graph labels** (keep original Japanese column names in data)
+- **Unit toggle (kWh / kW)**:
+  - 30-min view: kW = kWh * 2
+  - Daily/Monthly views: shows **Average Power [kW]** (= mean of 30-min kWh * 2) or **Energy [kWh]** (sum)
+- Saves uploaded Excel data to **SQLite DB**; subsequent runs load from DB
+- Single matplotlib plot; CSV export of displayed data; Clear DB button
 
-## 起動
+## Run
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
-## 備考
-- DBはアプリと同じディレクトリの `data.db` に作成されます（Streamlit Cloud等の環境ではセッション/コンテナの永続性に依存します）。
-- 日本語フォントが見つからない場合はOSに Noto Sans CJK JP などを導入してください。

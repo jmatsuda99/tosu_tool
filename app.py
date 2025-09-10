@@ -10,9 +10,9 @@ import matplotlib.pyplot as plt
 matplotlib.rcParams['font.family'] = ['sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-st.set_page_config(page_title="Energy Viewer (Time Series + Distribution)", layout="wide")
-st.title("Energy Consumption Viewer (Before/After Loss)")
-st.caption("Time series and distribution views. Data are saved to a local DB so you don't need to re-upload every time.")
+st.set_page_config(page_title="Energy Viewer (TS + Distribution + Debug)", layout="wide")
+st.title("Energy Consumption Viewer (Before/After Loss) — v1.4.2")
+st.caption("If a chart doesn't appear, open the Debug panel to see where data is filtered out.")
 
 DB_PATH = "data.db"
 TABLE_NAME = "usage_data"
@@ -26,6 +26,13 @@ def init_db():
                 使用電力量_ロス前 REAL
             )
         """)
+
+def to_numeric_safe(s):
+    # Strip common thousand separators and spaces before converting
+    return pd.to_numeric(
+        s.astype(str).str.replace(',', '', regex=False).str.strip(),
+        errors='coerce'
+    )
 
 @st.cache_data
 def load_excel(file):
@@ -80,10 +87,10 @@ def clear_db():
 
 init_db()
 
-# Upload / DB controls
-left, right = st.columns([2,1], gap="large")
-with left:
-    uploaded = st.file_uploader("Upload Excel (.xlsx) — only first time. Data will be saved to DB.", type=["xlsx"], key="upload_xlsx")
+# Top controls
+c1, c2, c3 = st.columns([1,1,1])
+with c1:
+    uploaded = st.file_uploader("Upload Excel (.xlsx) — first time only", type=["xlsx"], key="upload_xlsx")
     if uploaded is not None:
         df_up = load_excel(uploaded)
         if df_up is not None and not df_up.empty:
@@ -91,11 +98,14 @@ with left:
             st.success(f"Saved to DB. Rows: {len(df_up):,}")
         else:
             st.warning("No valid rows found in the uploaded file.")
-
-with right:
-    if st.button("Clear DB", type="secondary", key="btn_clear_db"):
+with c2:
+    if st.button("Clear DB", key="btn_clear_db"):
         clear_db()
-        st.warning("DB cleared. Reload to apply.")
+        st.warning("DB cleared. Upload again or rely on default file.")
+with c3:
+    if st.button("Clear Cache", key="btn_clear_cache"):
+        st.cache_data.clear()
+        st.success("Cache cleared. Reload the page.")
 
 # Load data (or bootstrap)
 df = load_from_db()
@@ -110,13 +120,31 @@ if df.empty:
     if df.empty:
         st.stop()
 
-# Shared controls
+# Debug panel
+with st.expander("🔍 Debug — Data health checks"):
+    st.write("**Rows in DB dataframe:**", len(df))
+    st.write("**Head (3):**"); st.dataframe(df.head(3))
+    st.write("**Tail (3):**"); st.dataframe(df.tail(3))
+    nn_after = df['使用電力量_ロス後'].notna().sum()
+    nn_before = df['使用電力量_ロス前'].notna().sum()
+    st.write(f"Non-null counts — After loss: {nn_after}, Before loss: {nn_before}")
+    # Peek numeric conversion issues
+    tmp_after = to_numeric_safe(df['使用電力量_ロス後'])
+    tmp_before = to_numeric_safe(df['使用電力量_ロス前'])
+    st.write(f"Coercion to numeric — After loss: valid={tmp_after.notna().sum()}, NaN={tmp_after.isna().sum()}")
+    st.write(f"Coercion to numeric — Before loss: valid={tmp_before.notna().sum()}, NaN={tmp_before.isna().sum()}")
+
+# Date range controls (handle single-point range)
 min_dt, max_dt = df["開始日時"].min(), df["開始日時"].max()
 st.write(f"Data range: **{min_dt}** to **{max_dt}**")
-range_sel = st.slider("Filter by date range", min_value=min_dt.to_pydatetime(), max_value=max_dt.to_pydatetime(), value=(min_dt.to_pydatetime(), max_dt.to_pydatetime()), key="date_range_slider")
-mask = (df["開始日時"] >= pd.to_datetime(range_sel[0])) & (df["開始日時"] <= pd.to_datetime(range_sel[1]))
-df = df.loc[mask].copy()
-if df.empty:
+if min_dt == max_dt:
+    st.info("Only a single timestamp in data — using the full range (no slider shown).")
+    df_range = df.copy()
+else:
+    range_sel = st.slider("Filter by date range", min_value=min_dt.to_pydatetime(), max_value=max_dt.to_pydatetime(), value=(min_dt.to_pydatetime(), max_dt.to_pydatetime()), key="date_range_slider")
+    mask = (df["開始日時"] >= pd.to_datetime(range_sel[0])) & (df["開始日時"] <= pd.to_datetime(range_sel[1]))
+    df_range = df.loc[mask].copy()
+if df_range.empty:
     st.warning("No data in the selected date range.")
     st.stop()
 
@@ -129,45 +157,48 @@ with tab_ts:
 
     y_cols = ["使用電力量_ロス後", "使用電力量_ロス前"]
     for c in y_cols:
-        if c not in df.columns:
+        if c not in df_range.columns:
             st.error(f"Column not found: {c}")
             st.stop()
 
-    plot_df = df[["開始日時"] + y_cols].copy()
-    plot_df[y_cols] = plot_df[y_cols].apply(pd.to_numeric, errors="coerce")
+    plot_df = df_range[["開始日時"] + y_cols].copy()
+    plot_df[y_cols] = plot_df[y_cols].apply(to_numeric_safe)
+
+    if plot_df[y_cols].dropna(how="all").empty:
+        st.warning("Both series are fully NaN after numeric conversion.")
+        st.stop()
 
     if view == "30-min (raw)":
         display_df = plot_df.sort_values("開始日時").copy()
         if unit == "kW":
             for c in y_cols:
-                display_df[c] = display_df[c] * 2.0  # 30-min kWh -> kW
+                display_df[c] = display_df[c] * 2.0
         x_col = "開始日時"
         y_label = "Power [kW]" if unit == "kW" else "Energy [kWh]"
-        title = "Energy/Power (30-min)"
     elif view == "Daily (sum / avg kW)":
-        grouped = (plot_df.set_index("開始日時").resample("D"))
+        grouped = (plot_df.set_index("開始日時").sort_index().resample("D"))
         if unit == "kW":
             display_df = grouped.mean(numeric_only=True).reset_index()
             for c in y_cols:
                 display_df[c] = display_df[c] * 2.0
-            x_col = "開始日時"; y_label = "Average Power [kW]"; title = "Average Power (Daily)"
+            x_col = "開始日時"; y_label = "Average Power [kW]"
         else:
             display_df = grouped.sum(numeric_only=True).reset_index()
-            x_col = "開始日時"; y_label = "Energy [kWh]"; title = "Energy (Daily Sum)"
+            x_col = "開始日時"; y_label = "Energy [kWh]"
     elif view == "Monthly (sum / avg kW)":
-        grouped = (plot_df.set_index("開始日時").resample("MS"))
+        grouped = (plot_df.set_index("開始日時").sort_index().resample("MS"))
         if unit == "kW":
             display_df = grouped.mean(numeric_only=True).reset_index()
             for c in y_cols:
                 display_df[c] = display_df[c] * 2.0
-            x_col = "開始日時"; y_label = "Average Power [kW]"; title = "Average Power (Monthly)"
+            x_col = "開始日時"; y_label = "Average Power [kW]"
         else:
             display_df = grouped.sum(numeric_only=True).reset_index()
-            x_col = "開始日時"; y_label = "Energy [kWh]"; title = "Energy (Monthly Sum)"
+            x_col = "開始日時"; y_label = "Energy [kWh]"
 
     display_df = display_df.dropna(subset=[x_col], how="any")
-    if display_df.empty or display_df[y_cols].dropna(how="all").empty:
-        st.warning("Nothing to plot: data after aggregation is empty.")
+    if display_df.empty or (display_df[y_cols].isna().all().all()):
+        st.warning("Nothing to plot: aggregated series are empty or all NaN.")
     else:
         display_df = display_df.sort_values(x_col)
         fig, ax = plt.subplots(figsize=(10, 4))
@@ -175,17 +206,14 @@ with tab_ts:
             "使用電力量_ロス後": "Energy (after loss)" if unit == "kWh" else "Power (after loss)",
             "使用電力量_ロス前": "Energy (before loss)" if unit == "kWh" else "Power (before loss)",
         }
-        plotted = False
         for col in y_cols:
             if col in display_df.columns and display_df[col].notna().any():
                 ax.plot(display_df[x_col], display_df[col], label=legend_map.get(col, col))
-                plotted = True
-        ax.set_xlabel("Start Time" if x_col == "開始日時" else ("Date" if "Daily" in view else "Month"))
+        ax.set_xlabel("Start Time" if x_col == "開始日時" else ("Date" if view.startswith("Daily") else "Month"))
         ax.set_ylabel(y_label)
         ax.set_title("Energy Consumption (Before/After Loss)" if unit == "kWh" else "Power (Before/After Loss)")
         ax.grid(True)
-        if plotted:
-            ax.legend()
+        ax.legend()
         st.pyplot(fig, clear_figure=True)
 
     st.subheader("Preview (top 50 rows)")
@@ -200,9 +228,9 @@ with tab_dist:
     unit2 = col_unit.radio("Unit", ["kWh", "kW"], horizontal=True, key="dist_unit")
     bins = col_bins.number_input("Bins", min_value=10, max_value=200, value=50, step=5, key="dist_bins")
 
-    vec = pd.to_numeric(df[target_label], errors="coerce").dropna()
+    vec = to_numeric_safe(df_range[target_label]).dropna()
     if vec.empty:
-        st.warning("Selected series has no numeric data.")
+        st.warning("Selected series has no numeric data after conversion.")
         st.stop()
 
     if unit2 == "kW":

@@ -1,3 +1,3 @@
-# Energy Viewer v1.4.1
+# Energy Viewer v1.4.2
 
-Fix: add unique keys to widgets to avoid StreamlitDuplicateElementId. Includes Distribution tab, DB, CSV export.
+Adds Debug panel, safer numeric conversion, single-point date fallback, cache clear button. Keeps TS & Distribution.

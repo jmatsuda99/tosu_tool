@@ -6,7 +6,6 @@ import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 
-# Use generic sans-serif fonts (English labels)
 matplotlib.rcParams['font.family'] = ['sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
@@ -26,28 +25,32 @@ def init_db():
                 使用電力量_ロス前 REAL
             )
         """)
-    return True
 
 @st.cache_data
 def load_excel(file):
     df = pd.read_excel(file)
-    expected_cols = ["開始日時", "使用電力量(ロス後)", "使用電力量(ロス前)"]
-    missing = [c for c in expected_cols if c not in df.columns]
-    if missing:
-        st.warning(f"Missing columns: {missing}")
-    # Normalize column names for DB
-    df = df.rename(columns={"使用電力量(ロス後)": "使用電力量_ロス後", "使用電力量(ロス前)": "使用電力量_ロス前"})
+    # Accept both original and normalized names
+    col_map = {
+        "使用電力量(ロス後)": "使用電力量_ロス後",
+        "使用電力量(ロス前)": "使用電力量_ロス前",
+    }
+    df = df.rename(columns=col_map)
     # Parse datetime
     if "開始日時" in df.columns:
         df["開始日時"] = pd.to_datetime(df["開始日時"], errors="coerce")
-        df = df.dropna(subset=["開始日時"])
+    df = df.dropna(subset=["開始日時"])
     keep = ["開始日時", "使用電力量_ロス後", "使用電力量_ロス前"]
-    df = df[[c for c in keep if c in df.columns]].copy()
+    missing = [c for c in keep if c not in df.columns]
+    if missing:
+        st.warning(f"Missing columns in uploaded file: {missing}")
+        # add the missing columns with NaN to avoid crashes
+        for m in missing:
+            df[m] = pd.NA
+    df = df[keep].copy()
     return df
 
 def save_to_db(df):
     df2 = df.copy()
-    # Ensure naive datetime strings
     df2["開始日時"] = pd.to_datetime(df2["開始日時"], errors="coerce")
     df2 = df2.dropna(subset=["開始日時"])
     df2["開始日時"] = df2["開始日時"].dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -58,7 +61,8 @@ def save_to_db(df):
             conn.execute(
                 f"INSERT INTO {TABLE_NAME}(開始日時, 使用電力量_ロス後, 使用電力量_ロス前) VALUES (?, ?, ?) "
                 f"ON CONFLICT(開始日時) DO UPDATE SET 使用電力量_ロス後=excluded.使用電力量_ロス後, 使用電力量_ロス前=excluded.使用電力量_ロス前",
-                (row["開始日時"], float(row.get("使用電力量_ロス後") or 0), float(row.get("使用電力量_ロス前") or 0))
+                (row["開始日時"], None if pd.isna(row["使用電力量_ロス後"]) else float(row["使用電力量_ロス後"]),
+                               None if pd.isna(row["使用電力量_ロス前"]) else float(row["使用電力量_ロス前"]))
             )
         conn.commit()
 
@@ -68,9 +72,10 @@ def load_from_db():
         return pd.DataFrame(columns=["開始日時","使用電力量_ロス後","使用電力量_ロス前"])
     with sqlite3.connect(DB_PATH) as conn:
         df = pd.read_sql_query(f"SELECT 開始日時, 使用電力量_ロス後, 使用電力量_ロス前 FROM {TABLE_NAME} ORDER BY 開始日時", conn)
-    if not df.empty:
-        df["開始日時"] = pd.to_datetime(df["開始日時"], errors="coerce")
-        df = df.dropna(subset=["開始日時"])
+    if df.empty:
+        return df
+    df["開始日時"] = pd.to_datetime(df["開始日時"], errors="coerce")
+    df = df.dropna(subset=["開始日時"])
     return df
 
 def clear_db():
@@ -79,106 +84,122 @@ def clear_db():
             conn.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
         os.remove(DB_PATH)
 
-# UI — Data input
 init_db()
+
+# Upload / DB controls
 left, right = st.columns([2,1], gap="large")
 with left:
     uploaded = st.file_uploader("Upload Excel (.xlsx) — only first time. Data will be saved to DB.", type=["xlsx"])
     if uploaded is not None:
         df_up = load_excel(uploaded)
-        if not df_up.empty:
+        if df_up is not None and not df_up.empty:
             save_to_db(df_up)
             st.success(f"Saved to DB. Rows: {len(df_up):,}")
         else:
-            st.warning("No valid rows found.")
+            st.warning("No valid rows found in the uploaded file.")
 
 with right:
     if st.button("Clear DB", type="secondary"):
         clear_db()
         st.warning("DB cleared. Reload to apply.")
 
-# Load data from DB (bootstrap from default path if empty)
+# Load data
 df = load_from_db()
 if df.empty:
     default_path = "/mnt/data/240801 24年8月～25年7月鳥栖PO1期.xlsx"
     if os.path.exists(default_path):
         st.info("DB is empty. Loaded a default file and saved to DB.")
         df_demo = load_excel(default_path)
-        if not df_demo.empty:
+        if df_demo is not None and not df_demo.empty:
             save_to_db(df_demo)
             df = load_from_db()
-    else:
+    if df.empty:
         st.stop()
+
+# Date range filter
+min_dt, max_dt = df["開始日時"].min(), df["開始日時"].max()
+st.write(f"Data range: **{min_dt}** to **{max_dt}**")
+range_sel = st.slider("Filter by date range", min_value=min_dt.to_pydatetime(), max_value=max_dt.to_pydatetime(), value=(min_dt.to_pydatetime(), max_dt.to_pydatetime()))
+mask = (df["開始日時"] >= pd.to_datetime(range_sel[0])) & (df["開始日時"] <= pd.to_datetime(range_sel[1]))
+df = df.loc[mask].copy()
+if df.empty:
+    st.warning("No data in the selected date range.")
+    st.stop()
 
 # Controls
 view = st.radio("Granularity", ["30-min (raw)", "Daily (sum / avg kW)", "Monthly (sum / avg kW)"], horizontal=True)
 unit = st.radio("Unit", ["kWh", "kW"], horizontal=True)
 
-plot_df = df.copy()
+# Prepare
 y_cols = ["使用電力量_ロス後", "使用電力量_ロス前"]
-plot_df = plot_df[["開始日時"] + [c for c in y_cols if c in plot_df.columns]].copy()
+for c in y_cols:
+    if c not in df.columns:
+        st.error(f"Column not found: {c}")
+        st.stop()
 
 # Aggregate
+plot_df = df[["開始日時"] + y_cols].copy()
+plot_df[y_cols] = plot_df[y_cols].apply(pd.to_numeric, errors="coerce")
+
 if view == "30-min (raw)":
     display_df = plot_df.sort_values("開始日時").copy()
     if unit == "kW":
         for c in y_cols:
-            if c in display_df.columns:
-                display_df[c] = display_df[c] * 2.0  # 30-min kWh -> kW
+            display_df[c] = display_df[c] * 2.0  # 30-min kWh -> kW
     x_col = "開始日時"
     y_label = "Power [kW]" if unit == "kW" else "Energy [kWh]"
     title = "Energy/Power (30-min)"
 elif view == "Daily (sum / avg kW)":
-    # Sum for kWh; Avg power for kW (mean of 30-min kWh * 2)
     grouped = (plot_df.set_index("開始日時").resample("D"))
     if unit == "kW":
         display_df = grouped.mean(numeric_only=True).reset_index()
         for c in y_cols:
-            if c in display_df.columns:
-                display_df[c] = display_df[c] * 2.0
-        x_col = "開始日時"
-        y_label = "Average Power [kW]"
-        title = "Average Power (Daily)"
+            display_df[c] = display_df[c] * 2.0
+        x_col = "開始日時"; y_label = "Average Power [kW]"; title = "Average Power (Daily)"
     else:
         display_df = grouped.sum(numeric_only=True).reset_index()
-        x_col = "開始日時"
-        y_label = "Energy [kWh]"
-        title = "Energy (Daily Sum)"
+        x_col = "開始日時"; y_label = "Energy [kWh]"; title = "Energy (Daily Sum)"
 elif view == "Monthly (sum / avg kW)":
     grouped = (plot_df.set_index("開始日時").resample("MS"))
     if unit == "kW":
         display_df = grouped.mean(numeric_only=True).reset_index()
         for c in y_cols:
-            if c in display_df.columns:
-                display_df[c] = display_df[c] * 2.0
-        x_col = "開始日時"
-        y_label = "Average Power [kW]"
-        title = "Average Power (Monthly)"
+            display_df[c] = display_df[c] * 2.0
+        x_col = "開始日時"; y_label = "Average Power [kW]"; title = "Average Power (Monthly)"
     else:
         display_df = grouped.sum(numeric_only=True).reset_index()
-        x_col = "開始日時"
-        y_label = "Energy [kWh]"
-        title = "Energy (Monthly Sum)"
+        x_col = "開始日時"; y_label = "Energy [kWh]"; title = "Energy (Monthly Sum)"
 
-# Plot
-fig, ax = plt.subplots(figsize=(10, 4))
-legend_map = {
-    "使用電力量_ロス後": "Energy (after loss)" if unit == "kWh" else "Power (after loss)",
-    "使用電力量_ロス前": "Energy (before loss)" if unit == "kWh" else "Power (before loss)",
-}
-for col in [c for c in y_cols if c in display_df.columns]:
-    ax.plot(display_df[x_col], display_df[col], label=legend_map.get(col, col))
-ax.set_xlabel("Start Time" if x_col == "開始日時" else ("Date" if "D" in view else "Month"))
-ax.set_ylabel(y_label)
-ax.set_title("Energy Consumption (Before/After Loss)" if unit == "kWh" else "Power (Before/After Loss)")
-ax.grid(True)
-ax.legend()
-st.pyplot(fig, clear_figure=True)
+# Guard emptiness and NaN
+display_df = display_df.dropna(subset=[x_col], how="any")
+if display_df.empty or display_df[y_cols].dropna(how="all").empty:
+    st.warning("Nothing to plot: data after aggregation is empty.")
+else:
+    display_df = display_df.sort_values(x_col)
+    # Plot
+    fig, ax = plt.subplots(figsize=(10, 4))
+    legend_map = {
+        "使用電力量_ロス後": "Energy (after loss)" if unit == "kWh" else "Power (after loss)",
+        "使用電力量_ロス前": "Energy (before loss)" if unit == "kWh" else "Power (before loss)",
+    }
+    plotted = False
+    for col in y_cols:
+        if col in display_df.columns and display_df[col].notna().any():
+            ax.plot(display_df[x_col], display_df[col], label=legend_map.get(col, col))
+            plotted = True
+    ax.set_xlabel("Start Time" if x_col == "開始日時" else ("Date" if "Daily" in view else "Month"))
+    ax.set_ylabel(y_label)
+    ax.set_title("Energy Consumption (Before/After Loss)" if unit == "kWh" else "Power (Before/After Loss)")
+    ax.grid(True)
+    if plotted:
+        ax.legend()
+    else:
+        st.warning("All selected series are empty.")
+    st.pyplot(fig, clear_figure=True)
 
 # Table + CSV
 st.subheader("Preview (top 50 rows)")
 st.dataframe(display_df.head(50))
-csv = display_df.rename(columns={
-    "開始日時": "Start Time"
-}).to_csv(index=False).encode("utf-8-sig")
+
+csv = display_df.rename(columns={"開始日時": "Start Time"}).to_csv(index=False).encode("utf-8-sig")
 st.download_button("Download displayed data (CSV)", data=csv, file_name="display_data.csv", mime="text/csv")

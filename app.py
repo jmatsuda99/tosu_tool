@@ -3,15 +3,16 @@ import os
 import sqlite3
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 
 matplotlib.rcParams['font.family'] = ['sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-st.set_page_config(page_title="Energy Viewer (DB, EN Graph)", layout="wide")
+st.set_page_config(page_title="Energy Viewer (Time Series + Distribution)", layout="wide")
 st.title("Energy Consumption Viewer (Before/After Loss)")
-st.caption("X-axis: Start Time. Y-axis: Energy/Power. Lines: Before vs After loss. Data are saved to a local DB so you don't need to re-upload every time.")
+st.caption("Time series and distribution views. Data are saved to a local DB so you don't need to re-upload every time.")
 
 DB_PATH = "data.db"
 TABLE_NAME = "usage_data"
@@ -30,22 +31,16 @@ def init_db():
 def load_excel(file):
     df = pd.read_excel(file)
     # Accept both original and normalized names
-    col_map = {
-        "使用電力量(ロス後)": "使用電力量_ロス後",
-        "使用電力量(ロス前)": "使用電力量_ロス前",
-    }
+    col_map = {"使用電力量(ロス後)": "使用電力量_ロス後", "使用電力量(ロス前)": "使用電力量_ロス前"}
     df = df.rename(columns=col_map)
     # Parse datetime
     if "開始日時" in df.columns:
         df["開始日時"] = pd.to_datetime(df["開始日時"], errors="coerce")
     df = df.dropna(subset=["開始日時"])
     keep = ["開始日時", "使用電力量_ロス後", "使用電力量_ロス前"]
-    missing = [c for c in keep if c not in df.columns]
-    if missing:
-        st.warning(f"Missing columns in uploaded file: {missing}")
-        # add the missing columns with NaN to avoid crashes
-        for m in missing:
-            df[m] = pd.NA
+    for k in keep:
+        if k not in df.columns:
+            df[k] = pd.NA
     df = df[keep].copy()
     return df
 
@@ -61,8 +56,9 @@ def save_to_db(df):
             conn.execute(
                 f"INSERT INTO {TABLE_NAME}(開始日時, 使用電力量_ロス後, 使用電力量_ロス前) VALUES (?, ?, ?) "
                 f"ON CONFLICT(開始日時) DO UPDATE SET 使用電力量_ロス後=excluded.使用電力量_ロス後, 使用電力量_ロス前=excluded.使用電力量_ロス前",
-                (row["開始日時"], None if pd.isna(row["使用電力量_ロス後"]) else float(row["使用電力量_ロス後"]),
-                               None if pd.isna(row["使用電力量_ロス前"]) else float(row["使用電力量_ロス前"]))
+                (row["開始日時"],
+                 None if pd.isna(row["使用電力量_ロス後"]) else float(row["使用電力量_ロス後"]),
+                 None if pd.isna(row["使用電力量_ロス前"]) else float(row["使用電力量_ロス前"]))
             )
         conn.commit()
 
@@ -103,7 +99,7 @@ with right:
         clear_db()
         st.warning("DB cleared. Reload to apply.")
 
-# Load data
+# Load data (or bootstrap)
 df = load_from_db()
 if df.empty:
     default_path = "/mnt/data/240801 24年8月～25年7月鳥栖PO1期.xlsx"
@@ -116,7 +112,7 @@ if df.empty:
     if df.empty:
         st.stop()
 
-# Date range filter
+# Shared controls
 min_dt, max_dt = df["開始日時"].min(), df["開始日時"].max()
 st.write(f"Data range: **{min_dt}** to **{max_dt}**")
 range_sel = st.slider("Filter by date range", min_value=min_dt.to_pydatetime(), max_value=max_dt.to_pydatetime(), value=(min_dt.to_pydatetime(), max_dt.to_pydatetime()))
@@ -126,80 +122,137 @@ if df.empty:
     st.warning("No data in the selected date range.")
     st.stop()
 
-# Controls
-view = st.radio("Granularity", ["30-min (raw)", "Daily (sum / avg kW)", "Monthly (sum / avg kW)"], horizontal=True)
-unit = st.radio("Unit", ["kWh", "kW"], horizontal=True)
+tab_ts, tab_dist = st.tabs(["Time Series", "Distribution"])
 
-# Prepare
-y_cols = ["使用電力量_ロス後", "使用電力量_ロス前"]
-for c in y_cols:
-    if c not in df.columns:
-        st.error(f"Column not found: {c}")
+# ==================== Time Series Tab ====================
+with tab_ts:
+    view = st.radio("Granularity", ["30-min (raw)", "Daily (sum / avg kW)", "Monthly (sum / avg kW)"], horizontal=True)
+    unit = st.radio("Unit", ["kWh", "kW"], horizontal=True)
+
+    y_cols = ["使用電力量_ロス後", "使用電力量_ロス前"]
+    for c in y_cols:
+        if c not in df.columns:
+            st.error(f"Column not found: {c}")
+            st.stop()
+
+    plot_df = df[["開始日時"] + y_cols].copy()
+    plot_df[y_cols] = plot_df[y_cols].apply(pd.to_numeric, errors="coerce")
+
+    if view == "30-min (raw)":
+        display_df = plot_df.sort_values("開始日時").copy()
+        if unit == "kW":
+            for c in y_cols:
+                display_df[c] = display_df[c] * 2.0  # 30-min kWh -> kW
+        x_col = "開始日時"
+        y_label = "Power [kW]" if unit == "kW" else "Energy [kWh]"
+        title = "Energy/Power (30-min)"
+    elif view == "Daily (sum / avg kW)":
+        grouped = (plot_df.set_index("開始日時").resample("D"))
+        if unit == "kW":
+            display_df = grouped.mean(numeric_only=True).reset_index()
+            for c in y_cols:
+                display_df[c] = display_df[c] * 2.0
+            x_col = "開始日時"; y_label = "Average Power [kW]"; title = "Average Power (Daily)"
+        else:
+            display_df = grouped.sum(numeric_only=True).reset_index()
+            x_col = "開始日時"; y_label = "Energy [kWh]"; title = "Energy (Daily Sum)"
+    elif view == "Monthly (sum / avg kW)":
+        grouped = (plot_df.set_index("開始日時").resample("MS"))
+        if unit == "kW":
+            display_df = grouped.mean(numeric_only=True).reset_index()
+            for c in y_cols:
+                display_df[c] = display_df[c] * 2.0
+            x_col = "開始日時"; y_label = "Average Power [kW]"; title = "Average Power (Monthly)"
+        else:
+            display_df = grouped.sum(numeric_only=True).reset_index()
+            x_col = "開始日時"; y_label = "Energy [kWh]"; title = "Energy (Monthly Sum)"
+
+    display_df = display_df.dropna(subset=[x_col], how="any")
+    if display_df.empty or display_df[y_cols].dropna(how="all").empty:
+        st.warning("Nothing to plot: data after aggregation is empty.")
+    else:
+        display_df = display_df.sort_values(x_col)
+        fig, ax = plt.subplots(figsize=(10, 4))
+        legend_map = {
+            "使用電力量_ロス後": "Energy (after loss)" if unit == "kWh" else "Power (after loss)",
+            "使用電力量_ロス前": "Energy (before loss)" if unit == "kWh" else "Power (before loss)",
+        }
+        plotted = False
+        for col in y_cols:
+            if col in display_df.columns and display_df[col].notna().any():
+                ax.plot(display_df[x_col], display_df[col], label=legend_map.get(col, col))
+                plotted = True
+        ax.set_xlabel("Start Time" if x_col == "開始日時" else ("Date" if "Daily" in view else "Month"))
+        ax.set_ylabel(y_label)
+        ax.set_title("Energy Consumption (Before/After Loss)" if unit == "kWh" else "Power (Before/After Loss)")
+        ax.grid(True)
+        if plotted:
+            ax.legend()
+        st.pyplot(fig, clear_figure=True)
+
+    st.subheader("Preview (top 50 rows)")
+    st.dataframe(display_df.head(50))
+    csv = display_df.rename(columns={"開始日時": "Start Time"}).to_csv(index=False).encode("utf-8-sig")
+    st.download_button("Download displayed data (CSV)", data=csv, file_name="display_data_timeseries.csv", mime="text/csv")
+
+# ==================== Distribution Tab ====================
+with tab_dist:
+    col_sel, col_unit, col_bins = st.columns([2,1,1])
+    target_label = col_sel.selectbox("Target series", ["使用電力量_ロス後", "使用電力量_ロス前"], index=0)
+    unit2 = col_unit.radio("Unit", ["kWh", "kW"], horizontal=True)
+    bins = col_bins.number_input("Bins", min_value=10, max_value=200, value=50, step=5)
+
+    # Prepare vector for stats
+    vec = pd.to_numeric(df[target_label], errors="coerce").dropna()
+    if vec.empty:
+        st.warning("Selected series has no numeric data.")
         st.stop()
 
-# Aggregate
-plot_df = df[["開始日時"] + y_cols].copy()
-plot_df[y_cols] = plot_df[y_cols].apply(pd.to_numeric, errors="coerce")
+    # Apply unit conversion
+    # Use 30-min base data; if user filtered by date only, we compute stats on raw 30-min values.
+    if unit2 == "kW":
+        vec = vec * 2.0
 
-if view == "30-min (raw)":
-    display_df = plot_df.sort_values("開始日時").copy()
-    if unit == "kW":
-        for c in y_cols:
-            display_df[c] = display_df[c] * 2.0  # 30-min kWh -> kW
-    x_col = "開始日時"
-    y_label = "Power [kW]" if unit == "kW" else "Energy [kWh]"
-    title = "Energy/Power (30-min)"
-elif view == "Daily (sum / avg kW)":
-    grouped = (plot_df.set_index("開始日時").resample("D"))
-    if unit == "kW":
-        display_df = grouped.mean(numeric_only=True).reset_index()
-        for c in y_cols:
-            display_df[c] = display_df[c] * 2.0
-        x_col = "開始日時"; y_label = "Average Power [kW]"; title = "Average Power (Daily)"
-    else:
-        display_df = grouped.sum(numeric_only=True).reset_index()
-        x_col = "開始日時"; y_label = "Energy [kWh]"; title = "Energy (Daily Sum)"
-elif view == "Monthly (sum / avg kW)":
-    grouped = (plot_df.set_index("開始日時").resample("MS"))
-    if unit == "kW":
-        display_df = grouped.mean(numeric_only=True).reset_index()
-        for c in y_cols:
-            display_df[c] = display_df[c] * 2.0
-        x_col = "開始日時"; y_label = "Average Power [kW]"; title = "Average Power (Monthly)"
-    else:
-        display_df = grouped.sum(numeric_only=True).reset_index()
-        x_col = "開始日時"; y_label = "Energy [kWh]"; title = "Energy (Monthly Sum)"
-
-# Guard emptiness and NaN
-display_df = display_df.dropna(subset=[x_col], how="any")
-if display_df.empty or display_df[y_cols].dropna(how="all").empty:
-    st.warning("Nothing to plot: data after aggregation is empty.")
-else:
-    display_df = display_df.sort_values(x_col)
-    # Plot
-    fig, ax = plt.subplots(figsize=(10, 4))
-    legend_map = {
-        "使用電力量_ロス後": "Energy (after loss)" if unit == "kWh" else "Power (after loss)",
-        "使用電力量_ロス前": "Energy (before loss)" if unit == "kWh" else "Power (before loss)",
+    # Stats
+    median = float(np.median(vec))
+    sigma = float(np.std(vec, ddof=0))  # population std dev; set ddof=1 if sample
+    stats = {
+        "Median": median,
+        "+1σ": median + sigma, "-1σ": median - sigma,
+        "+2σ": median + 2*sigma, "-2σ": median - 2*sigma,
+        "+3σ": median + 3*sigma, "-3σ": median - 3*sigma,
     }
-    plotted = False
-    for col in y_cols:
-        if col in display_df.columns and display_df[col].notna().any():
-            ax.plot(display_df[x_col], display_df[col], label=legend_map.get(col, col))
-            plotted = True
-    ax.set_xlabel("Start Time" if x_col == "開始日時" else ("Date" if "Daily" in view else "Month"))
-    ax.set_ylabel(y_label)
-    ax.set_title("Energy Consumption (Before/After Loss)" if unit == "kWh" else "Power (Before/After Loss)")
-    ax.grid(True)
-    if plotted:
-        ax.legend()
-    else:
-        st.warning("All selected series are empty.")
-    st.pyplot(fig, clear_figure=True)
 
-# Table + CSV
-st.subheader("Preview (top 50 rows)")
-st.dataframe(display_df.head(50))
+    # Histogram
+    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    ax2.hist(vec, bins=int(bins))  # no color specified
+    ax2.set_xlabel("Power [kW]" if unit2 == "kW" else "Energy [kWh]")
+    ax2.set_ylabel("Count")
+    ax2.set_title("Histogram with Median and ±nσ")
 
-csv = display_df.rename(columns={"開始日時": "Start Time"}).to_csv(index=False).encode("utf-8-sig")
-st.download_button("Download displayed data (CSV)", data=csv, file_name="display_data.csv", mime="text/csv")
+    # Vertical lines (no colors, just linestyles)
+    ax2.axvline(median, linestyle='-', linewidth=2, label=f"Median = {median:.3f}")
+    ax2.axvline(median - sigma, linestyle='--', label=f"-1σ = {median - sigma:.3f}")
+    ax2.axvline(median + sigma, linestyle='--', label=f"+1σ = {median + sigma:.3f}")
+    ax2.axvline(median - 2*sigma, linestyle='-.', label=f"-2σ = {median - 2*sigma:.3f}")
+    ax2.axvline(median + 2*sigma, linestyle='-.', label=f"+2σ = {median + 2*sigma:.3f}")
+    ax2.axvline(median - 3*sigma, linestyle=':', label=f"-3σ = {median - 3*sigma:.3f}")
+    ax2.axvline(median + 3*sigma, linestyle=':', label=f"+3σ = {median + 3*sigma:.3f}")
+    ax2.grid(True)
+    ax2.legend()
+    st.pyplot(fig2, clear_figure=True)
+
+    # Table
+    st.subheader("Statistics")
+    st.table(pd.DataFrame({
+        "Metric": ["Median", "-1σ", "+1σ", "-2σ", "+2σ", "-3σ", "+3σ"],
+        "Value": [median, median - sigma, median + sigma, median - 2*sigma, median + 2*sigma, median - 3*sigma, median + 3*sigma]
+    }))
+
+    # Export histogram data (vector) for further analysis
+    st.download_button(
+        "Download raw vector (CSV)",
+        data=pd.DataFrame({("Power [kW]" if unit2=="kW" else "Energy [kWh]"): vec}).to_csv(index=False).encode("utf-8-sig"),
+        file_name="distribution_vector.csv",
+        mime="text/csv"
+    )

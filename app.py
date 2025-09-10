@@ -30,10 +30,8 @@ def init_db():
 @st.cache_data
 def load_excel(file):
     df = pd.read_excel(file)
-    # Accept both original and normalized names
     col_map = {"使用電力量(ロス後)": "使用電力量_ロス後", "使用電力量(ロス前)": "使用電力量_ロス前"}
     df = df.rename(columns=col_map)
-    # Parse datetime
     if "開始日時" in df.columns:
         df["開始日時"] = pd.to_datetime(df["開始日時"], errors="coerce")
     df = df.dropna(subset=["開始日時"])
@@ -85,7 +83,7 @@ init_db()
 # Upload / DB controls
 left, right = st.columns([2,1], gap="large")
 with left:
-    uploaded = st.file_uploader("Upload Excel (.xlsx) — only first time. Data will be saved to DB.", type=["xlsx"])
+    uploaded = st.file_uploader("Upload Excel (.xlsx) — only first time. Data will be saved to DB.", type=["xlsx"], key="upload_xlsx")
     if uploaded is not None:
         df_up = load_excel(uploaded)
         if df_up is not None and not df_up.empty:
@@ -95,7 +93,7 @@ with left:
             st.warning("No valid rows found in the uploaded file.")
 
 with right:
-    if st.button("Clear DB", type="secondary"):
+    if st.button("Clear DB", type="secondary", key="btn_clear_db"):
         clear_db()
         st.warning("DB cleared. Reload to apply.")
 
@@ -115,7 +113,7 @@ if df.empty:
 # Shared controls
 min_dt, max_dt = df["開始日時"].min(), df["開始日時"].max()
 st.write(f"Data range: **{min_dt}** to **{max_dt}**")
-range_sel = st.slider("Filter by date range", min_value=min_dt.to_pydatetime(), max_value=max_dt.to_pydatetime(), value=(min_dt.to_pydatetime(), max_dt.to_pydatetime()))
+range_sel = st.slider("Filter by date range", min_value=min_dt.to_pydatetime(), max_value=max_dt.to_pydatetime(), value=(min_dt.to_pydatetime(), max_dt.to_pydatetime()), key="date_range_slider")
 mask = (df["開始日時"] >= pd.to_datetime(range_sel[0])) & (df["開始日時"] <= pd.to_datetime(range_sel[1]))
 df = df.loc[mask].copy()
 if df.empty:
@@ -126,8 +124,8 @@ tab_ts, tab_dist = st.tabs(["Time Series", "Distribution"])
 
 # ==================== Time Series Tab ====================
 with tab_ts:
-    view = st.radio("Granularity", ["30-min (raw)", "Daily (sum / avg kW)", "Monthly (sum / avg kW)"], horizontal=True)
-    unit = st.radio("Unit", ["kWh", "kW"], horizontal=True)
+    view = st.radio("Granularity", ["30-min (raw)", "Daily (sum / avg kW)", "Monthly (sum / avg kW)"], horizontal=True, key="ts_granularity")
+    unit = st.radio("Unit", ["kWh", "kW"], horizontal=True, key="ts_unit")
 
     y_cols = ["使用電力量_ロス後", "使用電力量_ロス前"]
     for c in y_cols:
@@ -193,44 +191,36 @@ with tab_ts:
     st.subheader("Preview (top 50 rows)")
     st.dataframe(display_df.head(50))
     csv = display_df.rename(columns={"開始日時": "Start Time"}).to_csv(index=False).encode("utf-8-sig")
-    st.download_button("Download displayed data (CSV)", data=csv, file_name="display_data_timeseries.csv", mime="text/csv")
+    st.download_button("Download displayed data (CSV)", data=csv, file_name="display_data_timeseries.csv", mime="text/csv", key="dl_timeseries_csv")
 
 # ==================== Distribution Tab ====================
 with tab_dist:
     col_sel, col_unit, col_bins = st.columns([2,1,1])
-    target_label = col_sel.selectbox("Target series", ["使用電力量_ロス後", "使用電力量_ロス前"], index=0)
-    unit2 = col_unit.radio("Unit", ["kWh", "kW"], horizontal=True)
-    bins = col_bins.number_input("Bins", min_value=10, max_value=200, value=50, step=5)
+    target_label = col_sel.selectbox("Target series", ["使用電力量_ロス後", "使用電力量_ロス前"], index=0, key="dist_target")
+    unit2 = col_unit.radio("Unit", ["kWh", "kW"], horizontal=True, key="dist_unit")
+    bins = col_bins.number_input("Bins", min_value=10, max_value=200, value=50, step=5, key="dist_bins")
 
-    # Prepare vector for stats
     vec = pd.to_numeric(df[target_label], errors="coerce").dropna()
     if vec.empty:
         st.warning("Selected series has no numeric data.")
         st.stop()
 
-    # Apply unit conversion
-    # Use 30-min base data; if user filtered by date only, we compute stats on raw 30-min values.
     if unit2 == "kW":
         vec = vec * 2.0
 
-    # Stats
     median = float(np.median(vec))
-    sigma = float(np.std(vec, ddof=0))  # population std dev; set ddof=1 if sample
-    stats = {
-        "Median": median,
-        "+1σ": median + sigma, "-1σ": median - sigma,
-        "+2σ": median + 2*sigma, "-2σ": median - 2*sigma,
-        "+3σ": median + 3*sigma, "-3σ": median - 3*sigma,
-    }
+    sigma = float(np.std(vec, ddof=0))
+    stats_df = pd.DataFrame({
+        "Metric": ["Median", "-1σ", "+1σ", "-2σ", "+2σ", "-3σ", "+3σ"],
+        "Value": [median, median - sigma, median + sigma, median - 2*sigma, median + 2*sigma, median - 3*sigma, median + 3*sigma]
+    })
 
-    # Histogram
     fig2, ax2 = plt.subplots(figsize=(10, 4))
-    ax2.hist(vec, bins=int(bins))  # no color specified
+    ax2.hist(vec, bins=int(bins))
     ax2.set_xlabel("Power [kW]" if unit2 == "kW" else "Energy [kWh]")
     ax2.set_ylabel("Count")
     ax2.set_title("Histogram with Median and ±nσ")
 
-    # Vertical lines (no colors, just linestyles)
     ax2.axvline(median, linestyle='-', linewidth=2, label=f"Median = {median:.3f}")
     ax2.axvline(median - sigma, linestyle='--', label=f"-1σ = {median - sigma:.3f}")
     ax2.axvline(median + sigma, linestyle='--', label=f"+1σ = {median + sigma:.3f}")
@@ -242,17 +232,13 @@ with tab_dist:
     ax2.legend()
     st.pyplot(fig2, clear_figure=True)
 
-    # Table
     st.subheader("Statistics")
-    st.table(pd.DataFrame({
-        "Metric": ["Median", "-1σ", "+1σ", "-2σ", "+2σ", "-3σ", "+3σ"],
-        "Value": [median, median - sigma, median + sigma, median - 2*sigma, median + 2*sigma, median - 3*sigma, median + 3*sigma]
-    }))
+    st.table(stats_df)
 
-    # Export histogram data (vector) for further analysis
     st.download_button(
         "Download raw vector (CSV)",
         data=pd.DataFrame({("Power [kW]" if unit2=="kW" else "Energy [kWh]"): vec}).to_csv(index=False).encode("utf-8-sig"),
         file_name="distribution_vector.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key="dl_distribution_vector"
     )

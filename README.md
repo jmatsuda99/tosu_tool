@@ -1,3 +1,1 @@
-# Energy Viewer v1.6.1 (Full)
-
-English-only graph titles + legend toggle (default OFF).
+# Energy Viewer v1.6.2\n\nResilient loading, Reload button, nearest-day default, overlay range helper. English titles + legend toggle (default OFF).\n

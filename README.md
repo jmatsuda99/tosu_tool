@@ -1,3 +1,5 @@
-# Energy Viewer v1.6.2
+# Energy Viewer v1.7
 
-Resilient loading (no hard stop when DB is empty), Reload button to clear cache, nearest-day default for Daily View, full-range helper for Overlay. English titles + legend toggle (default OFF).
+- Excel downloads for each chart's displayed data
+- Distribution legend shows numeric values for ±1σ/±2σ/±3σ (and Median)
+- Keeps English titles & legend toggle (default OFF)

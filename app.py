@@ -2,104 +2,31 @@
 import os
 import io
 import sqlite3
+from datetime import datetime, timedelta
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
 
-def _preprocess_uploaded_src(src_df):
-    \"\"\"最小限の前処理：列名変換と必要列のサブセット化のみ（機能拡張なし）。\"\"\"
-    if src_df is None:
-        return src_df
-    # 列名を文字列に揃える
-    src_df.columns = [str(c).strip() for c in src_df.columns]
-    # 列名リネーム（(ロス後)/(ロス前) -> _ロス後/_ロス前）
-    rename_map = {
-        "使用電力量(ロス後)": "使用電力量_ロス後",
-        "使用電力量(ロス前)": "使用電力量_ロス前",
-    }
-    src_df = src_df.rename(columns=rename_map)
-    # 必要列だけ残す（存在するものだけ）
-    keep = ["開始日時", "使用電力量_ロス後", "使用電力量_ロス前"]
-    keep_existing = [c for c in keep if c in src_df.columns]
-    if keep_existing:
-        src_df = src_df[keep_existing]
-    return src_df
+# ---- Matplotlib basic settings ----
+matplotlib.rcParams["font.family"] = ["sans-serif"]
+matplotlib.rcParams["axes.unicode_minus"] = False
 
+APP_TITLE = "Energy Consumption Viewer — v1.8"
+DB_PATH = "energy_cache.db"
+TABLE_NAME = "energy_records"
 
-matplotlib.rcParams['font.family'] = ['sans-serif']
-matplotlib.rcParams['axes.unicode_minus'] = False
+st.set_page_config(page_title="Energy Viewer v1.8", layout="wide")
+st.title(APP_TITLE)
 
-st.set_page_config(page_title="Energy Viewer v1.7", layout="wide")
-st.title("Energy Consumption Viewer — v1.7")
-st.caption("Adds Excel downloads for displayed data. Distribution legend shows numeric σ values.")
-
-DB_PATH = "data.db"
-TABLE_NAME = "usage_data"
-
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS {TABLE_NAME}(
-                開始日時 TEXT PRIMARY KEY,
-                使用電力量_ロス後 REAL,
-                使用電力量_ロス前 REAL
-            )
-        """)
-
-def to_numeric_safe(s):
-    return pd.to_numeric(
-        s.astype(str).str.replace(',', '', regex=False).str.strip(),
-        errors='coerce'
-    )
-
-def to_excel_bytes(dfs: dict):
-    """dfs: {sheet_name: dataframe} -> bytes for download"""
-    bio = io.BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        for sheet, df in dfs.items():
-            # Limit sheet name to 31 chars
-            sheet_name = sheet[:31]
-            df.to_excel(writer, index=False, sheet_name=sheet_name)
-    bio.seek(0)
-    return bio.getvalue()
+# ---- Utilities ----
+def to_numeric_safe(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce")
 
 @st.cache_data
-def load_excel(file):
-    df = pd.read_excel(file)
-    col_map = {"使用電力量(ロス後)": "使用電力量_ロス後", "使用電力量(ロス前)": "使用電力量_ロス前"}
-    df = df.rename(columns=col_map)
-    if "開始日時" in df.columns:
-        df["開始日時"] = pd.to_datetime(df["開始日時"], errors="coerce")
-    df = df.dropna(subset=["開始日時"])
-    keep = ["開始日時", "使用電力量_ロス後", "使用電力量_ロス前"]
-    for k in keep:
-        if k not in df.columns:
-            df[k] = pd.NA
-    return df[keep].copy()
-
-def save_to_db(df):
-    df2 = df.copy()
-    df2["開始日時"] = pd.to_datetime(df2["開始日時"], errors="coerce")
-    df2 = df2.dropna(subset=["開始日時"])
-    df2["開始日時"] = df2["開始日時"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("BEGIN")
-        conn.execute(f"CREATE TABLE IF NOT EXISTS {TABLE_NAME}(開始日時 TEXT PRIMARY KEY, 使用電力量_ロス後 REAL, 使用電力量_ロス前 REAL)")
-        for _, row in df2.iterrows():
-            conn.execute(
-                f"INSERT INTO {TABLE_NAME}(開始日時, 使用電力量_ロス後, 使用電力量_ロス前) VALUES (?, ?, ?) "
-                f"ON CONFLICT(開始日時) DO UPDATE SET 使用電力量_ロス後=excluded.使用電力量_ロス後, 使用電力量_ロス前=excluded.使用電力量_ロス前",
-                (row["開始日時"],
-                 None if pd.isna(row["使用電力量_ロス後"]) else float(row["使用電力量_ロス後"]),
-                 None if pd.isna(row["使用電力量_ロス前"]) else float(row["使用電力量_ロス前"]))
-            )
-        conn.commit()
-
-@st.cache_data
-def load_from_db():
+def load_from_db() -> pd.DataFrame:
     if not os.path.exists(DB_PATH):
         return pd.DataFrame(columns=["開始日時","使用電力量_ロス後","使用電力量_ロス前"])
     with sqlite3.connect(DB_PATH) as conn:
@@ -109,222 +36,273 @@ def load_from_db():
     df["開始日時"] = pd.to_datetime(df["開始日時"], errors="coerce")
     return df.dropna(subset=["開始日時"])
 
-def clear_db():
-    if os.path.exists(DB_PATH):
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
-        os.remove(DB_PATH)
+def save_to_db(df: pd.DataFrame) -> None:
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_NAME}(
+                開始日時 TEXT PRIMARY KEY,
+                使用電力量_ロス後 REAL,
+                使用電力量_ロス前 REAL
+            )"""
+        )
+        df2 = df.copy()
+        df2["開始日時"] = pd.to_datetime(df2["開始日時"], errors="coerce")
+        df2 = df2.dropna(subset=["開始日時"])
+        df2["開始日時"] = df2["開始日時"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        df2.to_sql(TABLE_NAME, conn, if_exists="append", index=False)
 
-# ---------- Top controls ----------
-init_db()
-c1, c2, c3 = st.columns([1,1,1])
-with c1:
-    uploaded = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key="upload_xlsx")
-    if uploaded is not None:
-        df_up = load_excel(uploaded)
-        if not df_up.empty:
-            save_to_db(df_up)
-            st.success(f"Saved to DB. Rows: {len(df_up):,}")
-with c2:
-    if st.button("Clear DB", key="btn_clear_db"):
-        clear_db()
-        st.warning("DB cleared. Upload again to repopulate.")
-with c3:
-    if st.button("Reload from DB", key="btn_reload"):
+def upsert_into_db(df: pd.DataFrame) -> None:
+    # Upsert by replacing duplicates on 開始日時
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            f"""CREATE TABLE IF NOT EXISTS {TABLE_NAME}(
+                開始日時 TEXT PRIMARY KEY,
+                使用電力量_ロス後 REAL,
+                使用電力量_ロス前 REAL
+            )"""
+        )
+        df2 = df.copy()
+        df2["開始日時"] = pd.to_datetime(df2["開始日時"], errors="coerce")
+        df2 = df2.dropna(subset=["開始日時"])
+        df2["開始日時"] = df2["開始日時"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        # temp table + replace
+        df2.to_sql("_tmp_import", conn, if_exists="replace", index=False)
+        conn.executescript(f"""
+            INSERT OR REPLACE INTO {TABLE_NAME}(開始日時, 使用電力量_ロス後, 使用電力量_ロス前)
+            SELECT 開始日時, 使用電力量_ロス後, 使用電力量_ロス前 FROM _tmp_import;
+            DROP TABLE _tmp_import;
+        """)
+
+def to_excel_bytes(sheets: dict) -> bytes:
+    buff = io.BytesIO()
+    with pd.ExcelWriter(buff, engine="openpyxl") as writer:
+        for name, df in sheets.items():
+            df.to_excel(writer, index=False, sheet_name=str(name)[:31])
+    buff.seek(0)
+    return buff.getvalue()
+
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+def convert_unit(df: pd.DataFrame, cols, unit: str) -> pd.DataFrame:
+    out = df.copy()
+    for c in cols:
+        out[c] = to_numeric_safe(out[c])
+        if unit == "kW":
+            out[c] = out[c] * 2.0   # 30分kWh → kWへ換算
+    return out
+
+# ---- Sidebar: Upload & DB tools ----
+st.sidebar.header("Data")
+file = st.sidebar.file_uploader("Upload CSV/Excel (30-min data)", type=["csv","xlsx","xls"])
+if st.sidebar.button("Clear DB"):
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+    st.sidebar.success("Database cleared.")
+    st.cache_data.clear()
+
+if file is not None:
+    try:
+        if file.name.lower().endswith(".csv"):
+            src = pd.read_csv(file)
+        else:
+            src = pd.read_excel(file)
+        # Expected columns: 開始日時, 使用電力量_ロス後, 使用電力量_ロス前
+        # Flexible: try to coerce
+        if "開始日時" not in src.columns:
+            # try common alternatives
+            for cand in ["start","timestamp","日時","開始時刻"]:
+                if cand in src.columns:
+                    src = src.rename(columns={cand: "開始日時"})
+                    break
+        # Keep only required columns, if present
+        keep = [c for c in ["開始日時","使用電力量_ロス後","使用電力量_ロス前"] if c in src.columns]
+        src = src[keep]
+        upsert_into_db(src)
+        st.sidebar.success(f"Imported {len(src)} rows.")
         st.cache_data.clear()
-        st.experimental_rerun()
+    except Exception as e:
+        st.sidebar.error(f"Import failed: {e}")
 
 df = load_from_db()
+st.caption(f"Records in DB: {len(df)}")
 
-# DB status banner
+# ---- Section 1: Time Series (full) ----
+st.subheader("Time Series")
 if df.empty:
-    st.error("No data found in DB. Please upload an Excel file to populate the database.")
+    st.info("Upload data to view charts.")
 else:
-    min_dt, max_dt = df["開始日時"].min(), df["開始日時"].max()
-    st.info(f"DB path: `{os.path.abspath(DB_PATH)}` — Rows: **{len(df):,}** — Range: **{min_dt}** → **{max_dt}**")
+    unit1 = st.radio("Unit", ["kWh","kW"], horizontal=True, key="ts_unit")
+    series_choice = st.multiselect(
+        "Series", ["使用電力量_ロス後","使用電力量_ロス前"], default=["使用電力量_ロス後"], key="ts_series"
+    )
+    show_legend_ts = st.checkbox("Show legend", value=False, key="ts_legend")
+    df_plot = convert_unit(df, series_choice, unit1)
+    fig1, ax1 = plt.subplots(figsize=(12,4))
+    for c in series_choice:
+        ax1.plot(df["開始日時"], df_plot[c], label=("After loss" if c.endswith("後") else "Before loss"))
+    ax1.set_title("Time Series (All)")
+    ax1.set_xlabel("Timestamp"); ax1.set_ylabel("Power [kW]" if unit1=="kW" else "Energy [kWh]")
+    ax1.grid(True)
+    if show_legend_ts: ax1.legend()
+    st.pyplot(fig1, clear_figure=True)
 
-# ---------- Tabs ----------
-tab_ts, tab_dist, tab_day, tab_overlay = st.tabs(["Time Series", "Distribution", "Daily View", "Daily Overlay"])
+    # downloads
+    xls = to_excel_bytes({"TimeSeries": pd.concat([df["開始日時"], df_plot[series_choice]], axis=1)})
+    st.download_button("Download Time Series (Excel)", data=xls, file_name="timeseries.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_ts_xlsx")
+    st.download_button("Download Time Series (CSV)", data=to_csv_bytes(pd.concat([df["開始日時"], df_plot[series_choice]], axis=1)),
+                       file_name="timeseries.csv", mime="text/csv", key="dl_ts_csv")
 
-# ---------- Time Series ----------
-with tab_ts:
-    if df.empty:
-        st.warning("Upload data to view Time Series.")
+# ---- Section 2: Distribution ----
+st.subheader("Distribution")
+if df.empty:
+    st.warning("Upload data to view Distribution.")
+else:
+    target = st.selectbox("Target", ["使用電力量_ロス後","使用電力量_ロス前"], key="dist_target")
+    unit2 = st.radio("Unit", ["kWh","kW"], horizontal=True, key="dist_unit")
+    bins = st.number_input("Bins", min_value=10, max_value=200, value=50, step=5, key="dist_bins")
+    show_legend = st.checkbox("Show legend", value=False, key="dist_legend")
+
+    vec = to_numeric_safe(df[target]).dropna()
+    if unit2=="kW": vec = vec * 2.0
+
+    if vec.empty:
+        st.warning("Target series has no numeric data.")
     else:
-        view = st.radio("Granularity", ["30-min (raw)", "Daily (sum/avg kW)", "Monthly (sum/avg kW)"], horizontal=True, key="ts_granularity")
-        unit = st.radio("Unit", ["kWh", "kW"], horizontal=True, key="ts_unit")
-        show_legend = st.checkbox("Show legend", value=False, key="ts_legend")
+        fig2, ax2 = plt.subplots(figsize=(10,4))
+        n, bins_edges, _ = ax2.hist(vec, bins=int(bins))
+        mu = np.median(vec)
+        sigma = np.std(vec)
+        # vertical lines: median and ±σ bands
+        for v, lab in [(mu, "Median"), (mu-sigma, "-1σ"), (mu+sigma, "+1σ"), (mu-2*sigma, "-2σ"), (mu+2*sigma, "+2σ"), (mu-3*sigma, "-3σ"), (mu+3*sigma, "+3σ")]:
+            ax2.axvline(v, linestyle="--")
+        ax2.set_title("Distribution")
+        ax2.set_xlabel("Power [kW]" if unit2=="kW" else "Energy [kWh]"); ax2.set_ylabel("Count")
+        ax2.grid(True)
+        if show_legend:
+            ax2.legend([
+                f"Median={mu:.1f}", 
+                f"-1σ={mu-sigma:.1f}", f"+1σ={mu+sigma:.1f}",
+                f"-2σ={mu-2*sigma:.1f}", f"+2σ={mu+2*sigma:.1f}",
+                f"-3σ={mu-3*sigma:.1f}", f"+3σ={mu+3*sigma:.1f}",
+            ], ncol=2, fontsize="small")
+        st.pyplot(fig2, clear_figure=True)
 
-        y_cols = ["使用電力量_ロス後","使用電力量_ロス前"]
-        plot_df = df[["開始日時"]+y_cols].copy()
-        plot_df[y_cols] = plot_df[y_cols].apply(to_numeric_safe)
+        # download data used
+        dist_df = pd.DataFrame({"value": vec})
+        st.download_button("Download Distribution Data (CSV)", data=to_csv_bytes(dist_df),
+                           file_name="distribution.csv", mime="text/csv", key="dl_dist_csv")
 
-        if view == "30-min (raw)":
-            display_df = plot_df.sort_values("開始日時")
-            if unit=="kW":
-                display_df[y_cols] *= 2.0
-            title = "Energy Consumption (Before/After Loss)" if unit=="kWh" else "Power (Before/After Loss)"
-        elif view.startswith("Daily"):
-            grouped = plot_df.set_index("開始日時").resample("D")
-            if unit=="kW":
-                display_df = grouped.mean(numeric_only=True).reset_index()
-                display_df[y_cols] *= 2.0
-                title="Average Power (Daily)"
-            else:
-                display_df = grouped.sum(numeric_only=True).reset_index()
-                title="Energy (Daily Sum)"
-        else:
-            grouped = plot_df.set_index("開始日時").resample("MS")
-            if unit=="kW":
-                display_df = grouped.mean(numeric_only=True).reset_index()
-                display_df[y_cols] *= 2.0
-                title="Average Power (Monthly)"
-            else:
-                display_df = grouped.sum(numeric_only=True).reset_index()
-                title="Energy (Monthly Sum)"
+# ---- Section 3: Single Day ----
+st.subheader("Single Day")
+if df.empty:
+    st.warning("Upload data to view Single Day.")
+else:
+    day = st.date_input("Select a date", value=pd.to_datetime(df["開始日時"].iloc[0]).date(), key="single_day")
+    unit3 = st.radio("Unit", ["kWh","kW"], horizontal=True, key="sd_unit")
+    series_choice = st.multiselect(
+        "Series", ["使用電力量_ロス後","使用電力量_ロス前"], default=["使用電力量_ロス後"], key="sd_series"
+    )
+    band_width = st.number_input("Shaded band half-width (e.g., ±X)", min_value=0, max_value=10000, value=1000, step=100, key="sd_band")
+    show_legend = st.checkbox("Show legend", value=False, key="sd_legend")
 
-        if display_df.empty or display_df[y_cols].isna().all().all():
-            st.warning("Nothing to plot. Check data contents.")
-        else:
-            fig, ax = plt.subplots(figsize=(10,4))
-            ax.plot(display_df["開始日時"], display_df["使用電力量_ロス後"], label="After loss")
-            ax.plot(display_df["開始日時"], display_df["使用電力量_ロス前"], label="Before loss")
-            ax.set_title(title)
-            ax.set_xlabel("Date/Time")
-            ax.set_ylabel("Power [kW]" if unit=="kW" else "Energy [kWh]")
-            ax.grid(True)
-            if show_legend: ax.legend()
-            st.pyplot(fig, clear_figure=True)
-
-            # --- Excel download for displayed data ---
-            xls = to_excel_bytes({"TimeSeries": display_df.rename(columns={"開始日時":"Start Time"})})
-            st.download_button("Download displayed data (Excel)", data=xls, file_name="timeseries_display.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_ts_xlsx")
-
-# ---------- Distribution ----------
-with tab_dist:
-    if df.empty:
-        st.warning("Upload data to view Distribution.")
+    df_day = df[df["開始日時"].dt.date == day]
+    if df_day.empty:
+        st.warning("No records for the selected date.")
     else:
-        target = st.selectbox("Target", ["使用電力量_ロス後","使用電力量_ロス前"], key="dist_target")
-        unit2 = st.radio("Unit", ["kWh","kW"], horizontal=True, key="dist_unit")
-        bins = st.number_input("Bins", min_value=10, max_value=200, value=50, step=5, key="dist_bins")
-        show_legend = st.checkbox("Show legend", value=False, key="dist_legend")
+        df_day = convert_unit(df_day, series_choice, unit3)
+        df_day["time"] = df_day["開始日時"].dt.strftime("%H:%M")
+        fig3, ax3 = plt.subplots(figsize=(10,4))
+        for c in series_choice:
+            ax3.plot(df_day["time"], df_day[c], label=("After loss" if c.endswith("後") else "Before loss"))
+        # shaded band around median of first selected series
+        ref = df_day[series_choice[0]].astype(float)
+        med = float(np.median(ref.values))
+        ax3.axhline(med, linestyle="--")
+        ax3.axhline(med + band_width, linestyle=":")
+        ax3.axhline(med - band_width, linestyle=":")
+        ax3.fill_between(df_day["time"], med-band_width, med+band_width, alpha=0.2)
 
-        vec = to_numeric_safe(df[target]).dropna()
-        if unit2=="kW": vec*=2.0
+        ax3.set_title(f"Single Day — {day.isoformat()}")
+        ax3.set_xlabel("Time of Day"); ax3.set_ylabel("Power [kW]" if unit3=="kW" else "Energy [kWh]")
+        ax3.grid(True)
+        if show_legend: ax3.legend()
+        st.pyplot(fig3, clear_figure=True)
 
-        if vec.empty:
-            st.warning("Target series has no numeric data.")
-        else:
-            fig2, ax2 = plt.subplots(figsize=(10,4))
-            ax2.hist(vec, bins=int(bins))
-            ax2.set_title("Histogram with Median and ±nσ")
-            ax2.set_xlabel("Power [kW]" if unit2=="kW" else "Energy [kWh]")
-            ax2.set_ylabel("Count")
+        # downloads
+        xls = to_excel_bytes({"SingleDay": df_day[["開始日時","time"] + series_choice]})
+        st.download_button("Download Single Day (Excel)", data=xls, file_name="single_day.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_sd_xlsx")
+        st.download_button("Download Single Day (CSV)", data=to_csv_bytes(df_day[["開始日時","time"] + series_choice]),
+                           file_name="single_day.csv", mime="text/csv", key="dl_sd_csv")
 
-            median, sigma = float(np.median(vec)), float(np.std(vec, ddof=0))
-            # Draw lines and put concrete numeric values into legend
-            ax2.axvline(median, linestyle="-", label=f"Median = {median:.3f}")
-            for n,style in zip([1,2,3],["--","-.",":"]):
-                ax2.axvline(median-n*sigma, linestyle=style, label=f"-{n}σ = {median - n*sigma:.3f}")
-                ax2.axvline(median+n*sigma, linestyle=style, label=f"+{n}σ = {median + n*sigma:.3f}")
-            ax2.grid(True)
-            if show_legend: ax2.legend()
-            st.pyplot(fig2, clear_figure=True)
+# ---- Section 4: Daily Overlay (range) ----
+st.subheader("Daily Overlay")
+if df.empty:
+    st.warning("Upload data to view Overlay.")
+else:
+    min_date = df["開始日時"].dt.date.min()
+    max_date = df["開始日時"].dt.date.max()
+    start_date, end_date = st.date_input("Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date, key="ol_range")
+    unit4 = st.radio("Unit", ["kWh","kW"], horizontal=True, key="ol_unit")
+    target = st.selectbox("Target", ["使用電力量_ロス後","使用電力量_ロス前"], key="ol_target")
+    show_legend = st.checkbox("Show legend", value=False, key="ol_legend")
+    band_width_ol = st.number_input("Shaded band half-width for overlay (±X)", min_value=0, max_value=10000, value=1000, step=100, key="ol_band")
 
-            # --- Excel download for distribution data ---
-            stats_df = pd.DataFrame({
-                "Metric": ["Median"] + [f"-{n}σ" for n in (1,2,3)] + [f"+{n}σ" for n in (1,2,3)],
-                "Value": [median] + [median - n*sigma for n in (1,2,3)] + [median + n*sigma for n in (1,2,3)]
-            })
-            vec_df = pd.DataFrame({("Power [kW]" if unit2=="kW" else "Energy [kWh]"): vec})
-            xls = to_excel_bytes({"HistogramData": vec_df, "Stats": stats_df})
-            st.download_button("Download histogram data (Excel)", data=xls, file_name="distribution_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_dist_xlsx")
+    overlay_rows = []
+    fig4, ax4 = plt.subplots(figsize=(12,4))
 
-# ---------- Daily View ----------
-with tab_day:
-    if df.empty:
-        st.warning("Upload data to view Daily View.")
+    # Iterate each day in range
+    day = start_date
+    ndays = 0
+    while day <= end_date:
+        df_i = df[df["開始日時"].dt.date == day]
+        if not df_i.empty:
+            ndays += 1
+            df_i = convert_unit(df_i, [target], unit4)
+            df_i["time"] = df_i["開始日時"].dt.strftime("%H:%M")
+            ax4.plot(df_i["time"], df_i[target], label=day.isoformat())
+            overlay_rows.append(df_i.assign(day=day.isoformat())[["day","開始日時","time",target]])
+        day = day + timedelta(days=1)
+
+    if ndays == 0:
+        st.warning("No records in the selected range.")
     else:
-        unit3 = st.radio("Unit",["kWh","kW"],horizontal=True,key="day_unit")
-        series_choice = st.multiselect("Series",["使用電力量_ロス後","使用電力量_ロス前"],["使用電力量_ロス後","使用電力量_ロス前"], key="day_series")
-        available_dates = pd.to_datetime(df["開始日時"].dt.date.unique())
-        available_dates = pd.Series(available_dates).sort_values().dt.date.tolist()
-        default_day = available_dates[-1] if available_dates else None
-        day = st.date_input("Pick a date", value=default_day, key="day_date")
-        show_legend = st.checkbox("Show legend", value=False, key="day_legend")
+        # shaded band around global median across all selected days (using first day's vector if needed)
+        cat = pd.concat(overlay_rows, ignore_index=True)
+        ref = to_numeric_safe(cat[target]).dropna()
+        if not ref.empty:
+            med = float(np.median(ref.values))
+            ax4.axhline(med, linestyle="--")
+            ax4.axhline(med + band_width_ol, linestyle=":")
+            ax4.axhline(med - band_width_ol, linestyle=":")
+            # Shade
+            ax4.fill_between(cat["time"].unique(), med-band_width_ol, med+band_width_ol, alpha=0.15)
 
-        if day:
-            start_dt = datetime.combine(day, datetime.min.time())
-            end_dt = start_dt+timedelta(days=1)
-            df_day = df[(df["開始日時"]>=start_dt)&(df["開始日時"]<end_dt)].copy()
-            if df_day.empty:
-                st.warning("No records for the selected date.")
-            else:
-                for c in series_choice:
-                    df_day[c] = to_numeric_safe(df_day[c])
-                    if unit3=="kW": df_day[c]*=2.0
-                df_day["time"]=df_day["開始日時"].dt.strftime("%H:%M")
-                fig3, ax3 = plt.subplots(figsize=(10,4))
-                for c in series_choice:
-                    ax3.plot(df_day["time"], df_day[c], label=("After loss" if c.endswith("後") else "Before loss"))
-                ax3.set_title(f"Single Day — {day.isoformat()}")
-                ax3.set_xlabel("Time of Day"); ax3.set_ylabel("Power [kW]" if unit3=="kW" else "Energy [kWh]")
-                ax3.grid(True)
-                if show_legend: ax3.legend()
-                st.pyplot(fig3, clear_figure=True)
+        ax4.set_title(f"Daily Overlay — {start_date.isoformat()} to {end_date.isoformat()} ({'After loss' if target.endswith('後') else 'Before loss'})")
+        ax4.set_xlabel("Time of Day"); ax4.set_ylabel("Power [kW]" if unit4=="kW" else "Energy [kWh]")
+        ax4.grid(True)
+        if show_legend: ax4.legend(ncol=2, fontsize="small")
+        st.pyplot(fig4, clear_figure=True)
 
-                # Excel download (single day)
-                out = df_day[["開始日時","time"] + series_choice].rename(columns={"開始日時":"Start Time"})
-                xls = to_excel_bytes({f"SingleDay_{day.isoformat()}": out})
-                st.download_button("Download single-day data (Excel)", data=xls, file_name=f"single_day_{day.isoformat()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_day_xlsx")
+        # Excel/CSV download (overlay)
+        cat = cat.rename(columns={"開始日時": "Start Time"})
+        xls = to_excel_bytes({"Overlay": cat})
+        st.download_button("Download Overlay (Excel)", data=xls, file_name="overlay.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_overlay_xlsx")
+        st.download_button("Download Overlay (CSV)", data=to_csv_bytes(cat),
+                           file_name="overlay.csv", mime="text/csv", key="dl_overlay_csv")
 
-# ---------- Daily Overlay ----------
-with tab_overlay:
-    if df.empty:
-        st.warning("Upload data to view Daily Overlay.")
-    else:
-        unit4 = st.radio("Unit",["kWh","kW"],horizontal=True,key="overlay_unit")
-        target = st.selectbox("Target",["使用電力量_ロス後","使用電力量_ロス前"], key="overlay_target")
-        min_dt = df["開始日時"].min().date(); max_dt = df["開始日時"].max().date()
-        c_a, c_b, c_c = st.columns([1,1,2])
-        with c_a:
-            start_date = st.date_input("Start date", value=min_dt, key="overlay_start")
-        with c_b:
-            end_date = st.date_input("End date", value=max_dt, key="overlay_end")
-        with c_c:
-            if st.button("Use full available range"):
-                st.session_state["overlay_start"] = min_dt
-                st.session_state["overlay_end"] = max_dt
-                st.experimental_rerun()
-        show_legend = st.checkbox("Show legend", value=False, key="overlay_legend")
+# ---- Section 5: DB export ----
+st.subheader("Database Export")
+if df.empty:
+    st.info("No data in DB.")
+else:
+    st.download_button("Download FULL DB (Excel)", data=to_excel_bytes({"DB": df}),
+                       file_name="db_export.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_db_xlsx")
+    st.download_button("Download FULL DB (CSV)", data=to_csv_bytes(df),
+                       file_name="db_export.csv", mime="text/csv", key="dl_db_csv")
 
-        overlay_rows = []
-        if start_date and end_date and start_date<=end_date:
-            fig4, ax4 = plt.subplots(figsize=(10,5))
-            for i in range((end_date-start_date).days+1):
-                d = start_date+timedelta(days=i)
-                start_dt=datetime.combine(d,datetime.min.time())
-                end_dt=start_dt+timedelta(days=1)
-                df_i=df[(df["開始日時"]>=start_dt)&(df["開始日時"]<end_dt)].copy()
-                if df_i.empty: continue
-                v=to_numeric_safe(df_i[target])
-                if unit4=="kW": v*=2.0
-                df_i=df_i.assign(value=v)
-                df_i=df_i.dropna(subset=["value"])
-                if df_i.empty: continue
-                df_i["time"]=df_i["開始日時"].dt.strftime("%H:%M")
-                ax4.plot(df_i["time"], df_i["value"], label=d.isoformat())
-                overlay_rows.append(df_i.assign(day=d.isoformat())[["day","開始日時","time","value"]])
-            ax4.set_title(f"Daily Overlay — {start_date.isoformat()} to {end_date.isoformat()} ({'After loss' if target.endswith('後') else 'Before loss'})")
-            ax4.set_xlabel("Time of Day"); ax4.set_ylabel("Power [kW]" if unit4=="kW" else "Energy [kWh]")
-            ax4.grid(True)
-            if show_legend: ax4.legend(ncol=2,fontsize="small")
-            st.pyplot(fig4, clear_figure=True)
-
-            # Excel download (overlay)
-            if overlay_rows:
-                cat = pd.concat(overlay_rows, ignore_index=True)
-                cat = cat.rename(columns={"開始日時":"Start Time", "value": ("Power [kW]" if unit4=="kW" else "Energy [kWh]")})
-                xls = to_excel_bytes({"Overlay": cat})
-                st.download_button("Download overlay data (Excel)", data=xls, file_name="daily_overlay.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_overlay_xlsx")
+st.caption("v1.8: added shaded bands with selectable width, CSV downloads, and full DB export.")

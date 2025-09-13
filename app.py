@@ -208,14 +208,12 @@ else:
             ax3.plot(df_day["time"], three_h_mean_any[c], linestyle="--", label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
 
         # Median ± band (based on first selected series if available)
-        if series_choice:
+                if series_choice:
             ref = df_day[series_choice[0]].astype(float)
             med = float(np.median(ref.values))
-            ax3.axhline(med, linestyle="--")
             ax3.axhline(med + band_width, linestyle=":")
             ax3.axhline(med - band_width, linestyle=":")
             ax3.fill_between(df_day["time"], med-band_width, med+band_width, alpha=0.2)
-
         # Deviation bars for BEFORE LOSS only (使用電力量_ロス前)
         if show_bars and "使用電力量_ロス前" in df_idx.columns:
             s = to_numeric_safe(df_idx["使用電力量_ロス前"])
@@ -240,7 +238,7 @@ else:
 
             # Put totals in the chart (bottom-right)
             txt = f"Blue total: {blue_total_kwh:.1f} kWh\nRed total: {red_total_kwh:.1f} kWh"
-            ax3.text(0.99, 0.02, txt, transform=ax3.transAxes, ha="right", va="bottom",
+            ax3.text(0.01, 0.98, txt, transform=ax3.transAxes, ha="left", va="top",
                      bbox=dict(boxstyle="round,pad=0.4", alpha=0.2))
 
         ax3.set_title(f"Single Day — {day.isoformat()} ({'kW' if unit3=='kW' else 'kWh'})")

@@ -12,3 +12,6 @@
 
 - `app.py` — Streamlit app entry point (v1.8)
 - `requirements.txt` — Python dependencies
+
+
+- v1.8 fix: added minimal column rename preprocessing for (ロス後)/(ロス前).

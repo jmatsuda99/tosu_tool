@@ -102,29 +102,29 @@ if st.sidebar.button("Clear DB"):
     st.sidebar.success("Database cleared.")
     st.cache_data.clear()
 
+
 if file is not None:
     try:
         if file.name.lower().endswith(".csv"):
             src = pd.read_csv(file)
         else:
             src = pd.read_excel(file)
-        # Expected columns: 開始日時, 使用電力量_ロス後, 使用電力量_ロス前
-        # Flexible: try to coerce
-        if "開始日時" not in src.columns:
-            # try common alternatives
-            for cand in ["start","timestamp","日時","開始時刻"]:
-                if cand in src.columns:
-                    src = src.rename(columns={cand: "開始日時"})
-                    break
-        # Keep only required columns, if present
+        # === 最小前処理：列名変換＆必要列のみ抽出（機能拡張なし） ===
+        src.columns = [str(c).strip() for c in src.columns]
+        rename_map = {
+            "使用電力量(ロス後)": "使用電力量_ロス後",
+            "使用電力量(ロス前)": "使用電力量_ロス前",
+        }
+        src = src.rename(columns=rename_map)
         keep = [c for c in ["開始日時","使用電力量_ロス後","使用電力量_ロス前"] if c in src.columns]
-        src = src[keep]
+        if keep:
+            src = src[keep]
+        # === ここまで ===
         upsert_into_db(src)
         st.sidebar.success(f"Imported {len(src)} rows.")
         st.cache_data.clear()
     except Exception as e:
         st.sidebar.error(f"Import failed: {e}")
-
 df = load_from_db()
 st.caption(f"Records in DB: {len(df)}")
 

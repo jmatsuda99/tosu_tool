@@ -1,3 +1,4 @@
-# Energy Viewer v1.8 (All Days Totals)
-- 全日について、Before loss の偏差（3h平均 − 実）を30分ごとに積算し、**青(+)/赤(-)のkWh合計**を日別と全体で表示。
-- 既存のSingle Day機能（3h平均・偏差バー・合計表示）はそのまま維持。
+# Energy Viewer v1.8 (all-days totals + reload-safe)
+- DBの更新を自動検知（**mtime連動キャッシュ**）＋「Reload data」ボタン。
+- Single Day：3h平均、偏差バー（Before loss）、グラフ内合計（kWh）。
+- All Days Totals：全日についてBlue/RedのkWh合計を日別バー＋総合計で表示、CSV出力。

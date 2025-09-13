@@ -9,6 +9,26 @@ import matplotlib
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
+def _preprocess_uploaded_src(src_df):
+    \"\"\"最小限の前処理：列名変換と必要列のサブセット化のみ（機能拡張なし）。\"\"\"
+    if src_df is None:
+        return src_df
+    # 列名を文字列に揃える
+    src_df.columns = [str(c).strip() for c in src_df.columns]
+    # 列名リネーム（(ロス後)/(ロス前) -> _ロス後/_ロス前）
+    rename_map = {
+        "使用電力量(ロス後)": "使用電力量_ロス後",
+        "使用電力量(ロス前)": "使用電力量_ロス前",
+    }
+    src_df = src_df.rename(columns=rename_map)
+    # 必要列だけ残す（存在するものだけ）
+    keep = ["開始日時", "使用電力量_ロス後", "使用電力量_ロス前"]
+    keep_existing = [c for c in keep if c in src_df.columns]
+    if keep_existing:
+        src_df = src_df[keep_existing]
+    return src_df
+
+
 matplotlib.rcParams['font.family'] = ['sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 

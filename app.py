@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 matplotlib.rcParams["font.family"] = ["sans-serif"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 
-APP_TITLE = "Energy Consumption Viewer — v1.8 (3h mean)"
+APP_TITLE = "Energy Consumption Viewer — v1.8 (3h mean + deviation bars + totals)"
 DB_PATH = "energy_cache.db"
 TABLE_NAME = "energy_records"
 
@@ -158,7 +158,7 @@ else:
         n, bins_edges, _ = ax2.hist(vec, bins=int(bins))
         mu = np.median(vec)
         sigma = np.std(vec)
-        for v, lab in [(mu, "Median"), (mu-sigma, "-1σ"), (mu+sigma, "+1σ"), (mu-2*sigma, "-2σ"), (mu+2*sigma, "+2σ"), (mu-3*sigma, "-3σ"), (mu+3*sigma, "+3σ")]:
+        for v, lab in [(mu, "Median"), (mu-sigma, "-1σ"), (mu+sigma, "+1σ"), (mu-2*sigma, "-2σ"), (mu+2*sigma, "+2σ"), (mu-3*sigma, "-3σ"), (mu+3\sigma, "+3σ")]:
             ax2.axvline(v, linestyle="--")
         ax2.set_title("Distribution")
         ax2.set_xlabel("Power [kW]" if unit2=="kW" else "Energy [kWh]"); ax2.set_ylabel("Count")
@@ -188,6 +188,7 @@ else:
     )
     band_width = st.number_input("Shaded band half-width (e.g., ±X)", min_value=0, max_value=10000, value=1000, step=100, key="sd_band")
     show_legend = st.checkbox("Show legend", value=False, key="sd_legend")
+    show_bars = st.checkbox("Show deviation bars (before loss only) + totals", value=True, key="sd_bars")
 
     df_day = df[df["開始日時"].dt.date == day]
     if df_day.empty:
@@ -195,40 +196,92 @@ else:
     else:
         df_day = convert_unit(df_day, series_choice, unit3)
         df_day["time"] = df_day["開始日時"].dt.strftime("%H:%M")
-        fig3, ax3 = plt.subplots(figsize=(10,4))
+        fig3, ax3 = plt.subplots(figsize=(12,5))
 
-        # 3-hour mean (per series) on datetime index, forward-filled to 30-min timeline
+        # 3-hour mean and deviations for selected series (for dashed lines)
         df_idx = df_day.set_index("開始日時")
-        three_h_mean = {}
+        three_h_mean_any = {}
         for c in series_choice:
-            m = df_idx[c].resample("3H").mean()
+            s = to_numeric_safe(df_idx[c])
+            m = s.resample("3H").mean()
             aligned = m.reindex(df_idx.index, method="ffill")
-            three_h_mean[c] = aligned.values
+            three_h_mean_any[c] = aligned.values
 
+        # Actual lines
         for c in series_choice:
             ax3.plot(df_day["time"], df_day[c], label=("After loss" if c.endswith("後") else "Before loss"))
-        # dashed 3h mean
+        # 3h mean dashed lines
         for c in series_choice:
-            ax3.plot(df_day["time"], three_h_mean[c], linestyle="--", label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
+            ax3.plot(df_day["time"], three_h_mean_any[c], linestyle="--", label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
 
-        ref = df_day[series_choice[0]].astype(float)
-        med = float(np.median(ref.values))
-        ax3.axhline(med, linestyle="--")
-        ax3.axhline(med + band_width, linestyle=":")
-        ax3.axhline(med - band_width, linestyle=":")
-        ax3.fill_between(df_day["time"], med-band_width, med+band_width, alpha=0.2)
+        # Median ± band (based on first selected series if available)
+        if series_choice:
+            ref = df_day[series_choice[0]].astype(float)
+            med = float(np.median(ref.values))
+            ax3.axhline(med, linestyle="--")
+            ax3.axhline(med + band_width, linestyle=":")
+            ax3.axhline(med - band_width, linestyle=":")
+            ax3.fill_between(df_day["time"], med-band_width, med+band_width, alpha=0.2)
 
-        ax3.set_title(f"Single Day — {day.isoformat()}")
+        # Deviation bars for BEFORE LOSS only (使用電力量_ロス前)
+        blue_total_kwh = None
+        red_total_kwh = None
+        if show_bars and "使用電力量_ロス前" in df_idx.columns:
+            s = to_numeric_safe(df_idx["使用電力量_ロス前"])
+            m = s.resample("3H").mean()
+            aligned = m.reindex(df_idx.index, method="ffill")
+            deviation = aligned.values - s.values  # signed (mean - actual)
+
+            # Draw bars anchored at mean
+            x = np.arange(len(df_day))
+            width = 0.5
+            heights = -deviation  # + -> down (negative height), - -> up (positive height)
+            colors = ["tab:blue" if d > 0 else "tab:red" if d < 0 else "0.5" for d in deviation]
+            ax3.bar(x, heights, bottom=aligned.values, width=width, color=colors, alpha=0.35, linewidth=0)
+
+            # Compute daily totals in kWh
+            if unit3 == "kW":
+                # deviations are in kW -> multiply 0.5h for each 30-min slot
+                blue_total_kwh = float(np.sum(np.clip(deviation, 0, None)) * 0.5)
+                red_total_kwh  = float(np.sum(np.clip(-deviation, 0, None)) * 0.5)
+            else:
+                # deviations are in kWh per 30-min slot already
+                blue_total_kwh = float(np.sum(np.clip(deviation, 0, None)))
+                red_total_kwh  = float(np.sum(np.clip(-deviation, 0, None)))
+
+            # Put totals in the chart (bottom-right)
+            txt = f"Blue total: {blue_total_kwh:.1f} kWh\nRed total: {red_total_kwh:.1f} kWh"
+            ax3.text(0.99, 0.02, txt, transform=ax3.transAxes, ha="right", va="bottom",
+                     bbox=dict(boxstyle="round,pad=0.4", alpha=0.2))
+
+        ax3.set_title(f"Single Day — {day.isoformat()} ({'kW' if unit3=='kW' else 'kWh'})")
         ax3.set_xlabel("Time of Day"); ax3.set_ylabel("Power [kW]" if unit3=="kW" else "Energy [kWh]")
         ax3.grid(True)
         if show_legend: ax3.legend(ncol=2, fontsize="small")
         st.pyplot(fig3, clear_figure=True)
 
-        xls = to_excel_bytes({"SingleDay": df_day[["開始日時","time"] + series_choice]})
-        st.download_button("Download Single Day (Excel)", data=xls, file_name="single_day.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_sd_xlsx")
-        st.download_button("Download Single Day (CSV)", data=to_csv_bytes(df_day[["開始日時","time"] + series_choice]),
-                           file_name="single_day.csv", mime="text/csv", key="dl_sd_csv")
+        # Optional: Deviation-only chart remains for reference
+        if show_bars and "使用電力量_ロス前" in df_idx.columns:
+            fig3d, ax3d = plt.subplots(figsize=(12,3.6))
+            # Reuse deviation defined above by recomputation (lightweight)
+            s = to_numeric_safe(df_idx["使用電力量_ロス前"])
+            m = s.resample("3H").mean()
+            aligned = m.reindex(df_idx.index, method="ffill")
+            deviation = aligned.values - s.values
+
+            ax3d.plot(df_day["time"], deviation, label="Before loss deviation")
+            ax3d.axhline(0.0, linestyle="--")
+            ax3d.set_title("Deviation from 3h Mean (mean - actual) — Before loss")
+            ax3d.set_xlabel("Time of Day"); ax3d.set_ylabel("Δ [kW]" if unit3=="kW" else "Δ [kWh]")
+            ax3d.grid(True)
+            if show_legend: ax3d.legend(ncol=2, fontsize="small")
+            st.pyplot(fig3d, clear_figure=True)
+
+            # CSV export for deviations
+            dev_df = pd.DataFrame({"time": df_day["time"], "deviation": deviation})
+            st.download_button("Download Deviation (Before loss) CSV", data=to_csv_bytes(dev_df),
+                               file_name="single_day_deviation_before_loss.csv", mime="text/csv", key="dl_sd_dev_b")
+
 
 # ---- Section 4: Daily Overlay (range) ----
 st.subheader("Daily Overlay")
@@ -293,4 +346,4 @@ else:
     st.download_button("Download FULL DB (CSV)", data=to_csv_bytes(df),
                        file_name="db_export.csv", mime="text/csv", key="dl_db_csv")
 
-st.caption("v1.8(3h mean): column-rename preprocessing + Single Day 3-hour mean dashed lines.")
+st.caption("v1.8: Single Day supports 3h mean dashed lines, Before-loss deviation bars anchored at mean, and in-graph daily totals (kWh).")

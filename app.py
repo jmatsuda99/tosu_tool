@@ -208,7 +208,7 @@ else:
             ax3.plot(df_day["time"], three_h_mean_any[c], linestyle="--", label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
 
         # Median ± band (based on first selected series if available)
-                if series_choice:
+        if series_choice:
             ref = df_day[series_choice[0]].astype(float)
             med = float(np.median(ref.values))
             ax3.axhline(med + band_width, linestyle=":")

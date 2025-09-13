@@ -1,7 +1,3 @@
-# Energy Viewer v1.8 (deviation bars + totals)
-- Single Day: 3-hour mean dashed lines for selected series.
-- Single Day: **Deviation bars** anchored at mean (Before loss only), color-coded by sign.
-- In-graph **daily totals** (kWh) for blue(+) / red(-). Totals account for current unit:
-  - If kW view: sum(deviation[kW>0])*0.5 and sum(|deviation[kW<0]|)*0.5
-  - If kWh view: sum(deviation[kWh>0]) and sum(|deviation[kWh<0]|)
-- Minimal column rename preprocessing: `(ロス後)/(ロス前)` → `_ロス後/_ロス前`.
+# Energy Viewer v1.8 (All Days Totals)
+- 全日について、Before loss の偏差（3h平均 − 実）を30分ごとに積算し、**青(+)/赤(-)のkWh合計**を日別と全体で表示。
+- 既存のSingle Day機能（3h平均・偏差バー・合計表示）はそのまま維持。

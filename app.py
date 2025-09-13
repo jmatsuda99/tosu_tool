@@ -158,7 +158,7 @@ else:
         n, bins_edges, _ = ax2.hist(vec, bins=int(bins))
         mu = np.median(vec)
         sigma = np.std(vec)
-        for v, lab in [(mu, "Median"), (mu-sigma, "-1σ"), (mu+sigma, "+1σ"), (mu-2*sigma, "-2σ"), (mu+2*sigma, "+2σ"), (mu-3*sigma, "-3σ"), (mu+3\sigma, "+3σ")]:
+        for v, lab in [(mu, "Median"), (mu-sigma, "-1σ"), (mu+sigma, "+1σ"), (mu-2*sigma, "-2σ"), (mu+2*sigma, "+2σ"), (mu-3*sigma, "-3σ"), (mu+3*sigma, "+3σ")]:
             ax2.axvline(v, linestyle="--")
         ax2.set_title("Distribution")
         ax2.set_xlabel("Power [kW]" if unit2=="kW" else "Energy [kWh]"); ax2.set_ylabel("Count")

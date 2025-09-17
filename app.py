@@ -62,7 +62,7 @@ def upsert_into_db(df: pd.DataFrame) -> None:
         conn.executescript(f"""
             INSERT OR REPLACE INTO {TABLE_NAME}(開始日時, 使用電力量_ロス後, 使用電力量_ロス前)
             SELECT 開始日時, 使用電力量_ロス後, 使用電力量_ロス前 FROM _tmp_import;
-            DROP TABLE _tmp_import;
+            DROP TABLE IF EXISTS _tmp_import;
         """)
 
 def to_excel_bytes(sheets: dict) -> bytes:
@@ -202,51 +202,50 @@ else:
             aligned = m.reindex(df_idx.index, method="ffill")
             three_h_mean_any[c] = aligned.values
 
-        # Actual lines
+        # Actual + Mean lines with unified scaling
+        fac = 2.0 if unit3=="kW" else 1.0
+        s_kwh_dict = {}
+        m_kwh_dict = {}
+        aligned_kwh_dict = {}
         for c in series_choice:
-            ax3.plot(df_day["time"], df_day[c], label=("After loss" if c.endswith("後") else "Before loss"))
-        # 3h mean dashed lines
+            s_kwh = to_numeric_safe(df_idx[c])              # raw 30min kWh
+            m_kwh = s_kwh.resample("3H").mean()
+            aligned_kwh = m_kwh.reindex(df_idx.index, method="ffill")
+            s_kwh_dict[c] = s_kwh
+            aligned_kwh_dict[c] = aligned_kwh
+            # Display series
+            s_disp = s_kwh * fac
+            aligned_disp = aligned_kwh * fac
+            ax3.plot(df_day["time"], s_disp, label=("After loss" if c.endswith("後") else "Before loss"))
+            ax3.plot(df_day["time"], aligned_disp, linestyle="--", zorder=5, zorder=5,
+                     label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
+
         for c in series_choice:
-            ax3.plot(df_day["time"], three_h_mean_any[c] * (2.0 if unit3=="kW" else 1.0), linestyle="--", zorder=5, label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
+            ax3.plot(df_day["time"], aligned_disp, linestyle="--", zorder=5, zorder=5, label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
 
         # Median ± band (based on first selected series if available)
         if series_choice:
-            ref = df_day[series_choice[0]].astype(float)
+            ref = df_day[series_choice[0]].astype(float) * (2.0 if unit3=="kW" else 1.0)
             med = float(np.median(ref.values))
             ax3.axhline(med + band_width, linestyle=":")
             ax3.axhline(med - band_width, linestyle=":")
             ax3.fill_between(df_day["time"], med-band_width, med+band_width, alpha=0.2)
         # Deviation bars for BEFORE LOSS only (使用電力量_ロス前)
         if show_bars and "使用電力量_ロス前" in df_idx.columns:
-            s = to_numeric_safe(df_idx["使用電力量_ロス前"])
-            # removed double-scale; keep raw kWh 30min
-            s = s
-            m = s.resample("3H").mean()
-            aligned = m.reindex(df_idx.index, method="ffill")
-            deviation = aligned.values - s.values  # signed (mean - actual)
-
-            # Draw bars anchored at mean
-            x = np.arange(len(df_day))
-            width = 0.5
-            heights = -deviation  # + -> down (negative height), - -> up (positive height)
-            colors = ["tab:blue" if d > 0 else "tab:red" if d < 0 else "0.5" for d in deviation]
-            ax3.bar(x, heights, bottom=aligned.values, width=width, color=colors, alpha=0.35, linewidth=0)
-
-            # Compute daily totals in kWh
-            if unit3 == "kW":
-                blue_total_kwh = float(np.sum(np.clip(deviation, 0, None)) * 0.5)
-                red_total_kwh  = float(np.sum(np.clip(-deviation, 0, None)) * 0.5)
-            else:
-                blue_total_kwh = float(np.sum(np.clip(deviation, 0, None)))
-                red_total_kwh  = float(np.sum(np.clip(-deviation, 0, None)))
-
-            # Put totals in the chart (bottom-right)
-            txt = f"Blue total: {blue_total_kwh:.1f} kWh\nRed total: {red_total_kwh:.1f} kWh"
-            ax3.text(0.01, 0.98, txt, transform=ax3.transAxes, ha="left", va="top",
-                     bbox=dict(boxstyle="round,pad=0.4", alpha=0.2))
-
-        ax3.set_title(f"Single Day — {day.isoformat()} ({'kW' if unit3=='kW' else 'kWh'})")
-        ax3.set_xlabel("Time of Day"); ax3.set_ylabel("Power [kW]" if unit3=="kW" else "Energy [kWh]")
+            fac = 2.0 if unit3=="kW" else 1.0
+            s_kwh = to_numeric_safe(df_idx["使用電力量_ロス前"])
+            m_kwh = s_kwh.resample("3H").mean()
+            aligned_kwh = m_kwh.reindex(df_idx.index, method="ffill")
+            aligned_disp = aligned_kwh * fac
+            dev_disp = (aligned_kwh - s_kwh) * fac
+            times = df_day["time"].values
+            for i, t in enumerate(times):
+                dv = dev_disp[i]
+                base = aligned_disp[i]
+                if dv > 0:
+                    ax3.bar(t, dv, width=0.03, bottom=base, color="tab:red", alpha=0.25)
+                elif dv < 0:
+                    ax3.bar(t, -dv, width=0.03, bottom=base+dv, color="tab:blue", alpha=0.25)
         ax3.grid(True)
         if show_legend: ax3.legend(ncol=2, fontsize="small")
         st.pyplot(fig3, clear_figure=True)

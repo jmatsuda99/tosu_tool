@@ -207,7 +207,7 @@ else:
             ax3.plot(df_day["time"], df_day[c], label=("After loss" if c.endswith("後") else "Before loss"))
         # 3h mean dashed lines
         for c in series_choice:
-            ax3.plot(df_day["time"], three_h_mean_any[c] * (2.0 if unit3=="kW" else 1.0), linestyle="--", label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
+            ax3.plot(df_day["time"], three_h_mean_any[c] * (2.0 if unit3=="kW" else 1.0), linestyle="--", zorder=5, label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
 
         # Median ± band (based on first selected series if available)
         if series_choice:

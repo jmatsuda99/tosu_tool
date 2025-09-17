@@ -187,6 +187,7 @@ else:
     if df_day.empty:
         st.warning("No records for the selected date.")
     else:
+        df_day_raw = df_day.copy()
         df_day = convert_unit(df_day, series_choice, unit3)
         df_day["time"] = df_day["開始日時"].dt.strftime("%H:%M")
         fig3, ax3 = plt.subplots(figsize=(12,5))
@@ -216,12 +217,13 @@ else:
             ax3.fill_between(df_day["time"], med-band_width, med+band_width, alpha=0.2)
         # Deviation bars for BEFORE LOSS only (使用電力量_ロス前)
         if show_bars and "使用電力量_ロス前" in df_idx.columns:
-            s = to_numeric_safe(df_idx["使用電力量_ロス前"])  # 30分kWh
-            # 単位統一：kW 表示時は 30分kWh → kW に換算
+            # raw（日付フィルタ済み・単位変換前）から取り出して単位を統一
+            df_idx_raw = df_day_raw.set_index("開始日時")
+            s = to_numeric_safe(df_idx_raw["使用電力量_ロス前"])  # 30分kWh（raw）
             if unit3 == "kW":
-                s = s * 2.0
+                s = s * 2.0  # 1回だけ換算
             m = s.resample("3H").mean()
-            aligned = m.reindex(df_idx.index, method="ffill")
+            aligned = m.reindex(df_idx_raw.index, method="ffill")
             deviation = aligned.values - s.values  # signed (mean - actual)
 
             # Draw bars anchored at mean

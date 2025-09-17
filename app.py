@@ -196,6 +196,7 @@ else:
         three_h_mean_any = {}
         for c in series_choice:
             s = to_numeric_safe(df_idx[c])
+            s = (s * 2.0) if unit3 == "kW" else s
             m = s.resample("3H").mean()
             aligned = m.reindex(df_idx.index, method="ffill")
             three_h_mean_any[c] = aligned.values
@@ -217,6 +218,7 @@ else:
         # Deviation bars for BEFORE LOSS only (使用電力量_ロス前)
         if show_bars and "使用電力量_ロス前" in df_idx.columns:
             s = to_numeric_safe(df_idx["使用電力量_ロス前"])
+            s = (s * 2.0) if unit3 == "kW" else s
             m = s.resample("3H").mean()
             aligned = m.reindex(df_idx.index, method="ffill")
             deviation = aligned.values - s.values  # signed (mean - actual)
@@ -238,15 +240,6 @@ else:
 
             # Put totals in the chart (bottom-right)
             txt = f"Blue total: {blue_total_kwh:.1f} kWh\nRed total: {red_total_kwh:.1f} kWh"
-            # 3h mean [kW] table (outside the plot)
-            try:
-                m_tbl = m.copy()
-                mean_table = pd.DataFrame({"3h mean [kW]": m_tbl.values},
-                                          index=m_tbl.index.strftime("%H:%M"))
-                st.table(mean_table)
-            except Exception as _e:
-                st.caption(f"3h mean table unavailable: {_e}")
-
             ax3.text(0.01, 0.98, txt, transform=ax3.transAxes, ha="left", va="top",
                      bbox=dict(boxstyle="round,pad=0.4", alpha=0.2))
 
@@ -260,6 +253,7 @@ else:
         if show_bars and "使用電力量_ロス前" in df_idx.columns:
             fig3d, ax3d = plt.subplots(figsize=(12,3.6))
             s = to_numeric_safe(df_idx["使用電力量_ロス前"])
+            s = (s * 2.0) if unit3 == "kW" else s
             m = s.resample("3H").mean()
             aligned = m.reindex(df_idx.index, method="ffill")
             deviation = aligned.values - s.values

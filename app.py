@@ -216,7 +216,10 @@ else:
             ax3.fill_between(df_day["time"], med-band_width, med+band_width, alpha=0.2)
         # Deviation bars for BEFORE LOSS only (使用電力量_ロス前)
         if show_bars and "使用電力量_ロス前" in df_idx.columns:
-            s = to_numeric_safe(df_idx["使用電力量_ロス前"])
+            s = to_numeric_safe(df_idx["使用電力量_ロス前"])  # 30分kWh
+            # 単位統一：kW 表示時は 30分kWh → kW に換算
+            if unit3 == "kW":
+                s = s * 2.0
             m = s.resample("3H").mean()
             aligned = m.reindex(df_idx.index, method="ffill")
             deviation = aligned.values - s.values  # signed (mean - actual)

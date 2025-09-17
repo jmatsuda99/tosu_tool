@@ -217,11 +217,11 @@ else:
             s_disp = s_kwh * fac
             aligned_disp = aligned_kwh * fac
             ax3.plot(df_day["time"], s_disp, label=("After loss" if c.endswith("後") else "Before loss"))
-            ax3.plot(df_day["time"], aligned_disp, linestyle="--", zorder=5, zorder=5,
+            ax3.plot(df_day["time"], aligned_disp, linestyle="--", zorder=5,
                      label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
 
         for c in series_choice:
-            ax3.plot(df_day["time"], aligned_disp, linestyle="--", zorder=5, zorder=5, label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
+            ax3.plot(df_day["time"], aligned_disp, linestyle="--", zorder=5, label=f"{'After loss' if c.endswith('後') else 'Before loss'} (3h mean)")
 
         # Median ± band (based on first selected series if available)
         if series_choice:

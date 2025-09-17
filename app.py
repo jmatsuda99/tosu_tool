@@ -238,6 +238,15 @@ else:
 
             # Put totals in the chart (bottom-right)
             txt = f"Blue total: {blue_total_kwh:.1f} kWh\nRed total: {red_total_kwh:.1f} kWh"
+            # 3h mean [kW] table (outside the plot)
+            try:
+                m_tbl = m.copy()
+                mean_table = pd.DataFrame({"3h mean [kW]": m_tbl.values},
+                                          index=m_tbl.index.strftime("%H:%M"))
+                st.table(mean_table)
+            except Exception as _e:
+                st.caption(f"3h mean table unavailable: {_e}")
+
             ax3.text(0.01, 0.98, txt, transform=ax3.transAxes, ha="left", va="top",
                      bbox=dict(boxstyle="round,pad=0.4", alpha=0.2))
 
